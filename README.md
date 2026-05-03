@@ -15,6 +15,32 @@ This repository contains a Docker-first voice application that combines a React 
 - `infra/janus/`: Janus core plus Streaming, AudioBridge, HTTP, and WebSocket configuration
 - `docs/`: deeper architecture, setup, testing, and RTP interoperability notes
 
+## Project Topology
+
+```mermaid
+flowchart LR
+	Browser[Browser clients]
+	Gateway[Caddy HTTPS gateway\n:443]
+	Frontend[Frontend\nReact + Vite]
+	Backend[Backend\nExpress + Socket.IO]
+	Janus[Janus Gateway\nStreaming + AudioBridge]
+	RTP[External RTP tools or radios]
+
+	Browser -->|HTTPS| Gateway
+	Gateway -->|Static app| Frontend
+	Browser -->|REST and Socket.IO| Gateway
+	Gateway -->|/api /socket.io /health| Backend
+	Backend -->|Janus WebSocket control| Janus
+	Browser -->|PTT clip upload| Backend
+	Backend -->|FFmpeg to Opus RTP| Janus
+	Browser <-->|WebRTC audio| Janus
+	Janus <-->|RTP forwarders and RTP participants| RTP
+```
+
+- Caddy is the public entrypoint for browsers and forwards static UI requests to the frontend plus API and Socket.IO traffic to the backend.
+- The backend owns room state and Janus control, and it converts push-to-talk uploads into Opus RTP for Janus Streaming.
+- Janus is the media plane: browsers use WebRTC with Janus directly, while external tools use plain RTP through AudioBridge forwarders or participants.
+
 ## Media Paths
 
 ### Walkie-talkie mode
