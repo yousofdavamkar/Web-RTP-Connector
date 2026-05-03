@@ -1,0 +1,83 @@
+services:
+  janus:
+    image: ${JANUS_IMAGE:-canyan/janus-gateway:latest}
+    restart: unless-stopped
+    command:
+      - sh
+      - -lc
+      - |
+        cp /config-template/*.jcfg /usr/local/etc/janus/
+        sed -i "s/__LAN_HOST_IP__/${LAN_HOST_IP:-127.0.0.1}/g" /usr/local/etc/janus/janus.jcfg
+        exec /usr/local/bin/janus
+    volumes:
+      - ./infra/janus:/config-template:ro
+    ports:
+      - "127.0.0.1:8088:8088"
+      - "127.0.0.1:7088:7088"
+      - "127.0.0.1:8188:8188"
+      - "127.0.0.1:7188:7188"
+      - "127.0.0.1:6004:6004/udp"
+      - "10000-10200:10000-10200/udp"
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    environment:
+      SIGNALING_PORT: 4000
+      CLIENT_ORIGIN: "*"
+      JANUS_WS_URL: ws://janus:8188
+      JANUS_STREAMING_ADMIN_KEY: streaming-admin-key
+      JANUS_AUDIOBRIDGE_ADMIN_KEY: audiobridge-admin-key
+      JANUS_STREAMING_BIND_HOST: janus
+      JANUS_STREAMING_PUBLIC_HOST: ${LAN_HOST_IP:-127.0.0.1}
+      JANUS_STREAMING_PORT_START: 5004
+      JANUS_STREAMING_PORT_END: 5098
+      JANUS_RTP_FORWARD_HOST: host.docker.internal
+      JANUS_RTP_FORWARD_PORT: 7000
+      FFMPEG_PATH: ffmpeg
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+
+  gateway:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - frontend
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        cat >/etc/caddy/Caddyfile <<EOF
+        {
+            default_sni ${LAN_HOST_IP:-127.0.0.1}
+        }
+
+        http://localhost, http://${LAN_HOST_IP:-127.0.0.1} {
+            redir https://{host}{uri}
+        }
+
+        https://localhost, https://${LAN_HOST_IP:-127.0.0.1} {
+            tls internal
+
+            reverse_proxy /api/* backend:4000
+            reverse_proxy /socket.io/* backend:4000
+            reverse_proxy /health backend:4000
+            reverse_proxy frontend:4173
+        }
+        EOF
+        exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

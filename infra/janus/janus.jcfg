@@ -1,0 +1,25 @@
+general: {
+    log_to_stdout = true
+}
+
+nat: {
+    full_trickle = true
+    nat_1_1_mapping = "__LAN_HOST_IP__"
+}
+
+media: {
+    rtp_port_range = "10000-10200"
+}
+
+events: {
+    broadcast = false
+}
+
+plugins: {
+}
+
+transports: {
+}
+
+loggers: {
+}

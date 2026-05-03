@@ -1,0 +1,325 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+:root {
+    color-scheme: dark;
+    --bg: #081018;
+    --bg-elevated: rgba(11, 22, 34, 0.82);
+    --bg-panel: rgba(17, 30, 43, 0.88);
+    --line: rgba(120, 176, 214, 0.24);
+    --text: #edf6ff;
+    --muted: #9fb8cc;
+    --accent: #78e1b5;
+    --accent-strong: #0eb084;
+    --warn: #ff8c5c;
+    --danger: #ff5666;
+    --shadow: 0 30px 80px rgba(0, 0, 0, 0.32);
+    font-family: 'Space Grotesk', 'Segoe UI', sans-serif;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    min-height: 100vh;
+    background:
+        radial-gradient(circle at top left, rgba(14, 176, 132, 0.18), transparent 28%),
+        radial-gradient(circle at bottom right, rgba(255, 140, 92, 0.18), transparent 32%),
+        linear-gradient(135deg, #081018, #0a1724 35%, #07131d 100%);
+    color: var(--text);
+}
+
+button,
+input,
+select {
+    font: inherit;
+}
+
+.app-shell {
+    position: relative;
+    min-height: 100vh;
+    overflow: hidden;
+}
+
+.app-background {
+    position: absolute;
+    inset: 0;
+    background-image:
+        linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+    background-size: 42px 42px;
+    mask-image: radial-gradient(circle at center, black 40%, transparent 100%);
+}
+
+.app-content {
+    position: relative;
+    padding: 4rem 1.5rem;
+    max-width: 1220px;
+    margin: 0 auto;
+}
+
+.selector-shell,
+.mode-grid {
+    display: grid;
+    gap: 1.25rem;
+}
+
+.selector-shell {
+    grid-template-columns: 1.1fr 0.9fr;
+}
+
+.selector-card,
+.panel {
+    background: var(--bg-elevated);
+    border: 1px solid var(--line);
+    border-radius: 28px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(18px);
+}
+
+.hero-card,
+.form-card,
+.panel {
+    padding: 1.5rem;
+}
+
+.hero-card h1,
+.mode-header h2 {
+    margin: 0.4rem 0 0.75rem;
+    font-size: clamp(2rem, 5vw, 4.2rem);
+    line-height: 0.95;
+}
+
+.lead,
+.mode-header p,
+.room-list-header p,
+.participant-list span,
+.status-grid label {
+    color: var(--muted);
+}
+
+.eyebrow {
+    margin: 0;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.28em;
+    font-size: 0.72rem;
+    font-family: 'IBM Plex Mono', monospace;
+}
+
+.architecture-pill-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-top: 2rem;
+}
+
+.architecture-pill-grid span,
+.call-state-badge {
+    background: rgba(120, 225, 181, 0.1);
+    color: var(--accent);
+    border: 1px solid rgba(120, 225, 181, 0.22);
+    border-radius: 999px;
+    padding: 0.65rem 0.95rem;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.85rem;
+}
+
+.room-form,
+.status-grid,
+.call-actions {
+    display: grid;
+    gap: 0.9rem;
+}
+
+.room-form label {
+    display: grid;
+    gap: 0.45rem;
+    font-size: 0.95rem;
+}
+
+.room-form input,
+.room-form select {
+    background: rgba(8, 16, 24, 0.85);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    color: var(--text);
+    padding: 0.9rem 1rem;
+}
+
+.primary-button,
+.secondary-button,
+.danger-button,
+.ghost-button,
+.ptt-button {
+    border: 0;
+    border-radius: 18px;
+    padding: 0.95rem 1.1rem;
+    cursor: pointer;
+    transition: transform 180ms ease, box-shadow 180ms ease, opacity 180ms ease;
+}
+
+.primary-button:hover,
+.secondary-button:hover,
+.danger-button:hover,
+.ghost-button:hover,
+.ptt-button:hover {
+    transform: translateY(-1px);
+}
+
+.primary-button {
+    background: linear-gradient(135deg, var(--accent), #b8f7df);
+    color: #092118;
+    font-weight: 700;
+}
+
+.secondary-button {
+    background: rgba(120, 176, 214, 0.16);
+    color: var(--text);
+    border: 1px solid var(--line);
+}
+
+.danger-button {
+    background: linear-gradient(135deg, #ff6d7d, var(--danger));
+    color: white;
+}
+
+.ghost-button {
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--text);
+}
+
+.inline-error {
+    margin: 0;
+    color: #ffd0c0;
+}
+
+.room-list {
+    margin-top: 1.5rem;
+    border-top: 1px solid var(--line);
+    padding-top: 1rem;
+}
+
+.room-list ul,
+.participant-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: grid;
+    gap: 0.65rem;
+}
+
+.room-list li,
+.participant-list li,
+.incoming-call-card {
+    display: grid;
+    gap: 0.18rem;
+    background: var(--bg-panel);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 0.9rem 1rem;
+}
+
+.mode-shell {
+    display: grid;
+    gap: 1rem;
+}
+
+.mode-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    align-items: flex-start;
+}
+
+.mode-header h2 {
+    font-size: clamp(1.8rem, 4vw, 3.1rem);
+}
+
+.mode-grid {
+    grid-template-columns: 1.15fr 0.85fr;
+}
+
+.ptt-button {
+    min-height: 280px;
+    display: grid;
+    place-items: center;
+    text-align: center;
+    gap: 0.5rem;
+    background:
+        radial-gradient(circle at top, rgba(120, 225, 181, 0.38), transparent 45%),
+        linear-gradient(160deg, rgba(120, 225, 181, 0.16), rgba(8, 16, 24, 0.88));
+    color: var(--text);
+    border: 1px solid rgba(120, 225, 181, 0.32);
+    font-size: 1rem;
+    touch-action: none;
+    user-select: none;
+}
+
+.ptt-button strong {
+    font-size: 2rem;
+}
+
+.ptt-button.recording {
+    box-shadow: 0 0 0 1px rgba(255, 140, 92, 0.3), 0 0 40px rgba(255, 140, 92, 0.18);
+}
+
+.status-grid {
+    grid-template-columns: repeat(3, 1fr);
+}
+
+.status-grid div {
+    background: var(--bg-panel);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 0.9rem;
+}
+
+.status-grid label {
+    display: block;
+    font-size: 0.82rem;
+    margin-bottom: 0.35rem;
+}
+
+.visualizer {
+    display: flex;
+    align-items: end;
+    gap: 0.25rem;
+    min-height: 66px;
+}
+
+.visualizer-bar {
+    width: 10px;
+    height: 56px;
+    border-radius: 999px;
+    background: linear-gradient(180deg, var(--accent), rgba(120, 225, 181, 0.2));
+    transform-origin: bottom;
+}
+
+.call-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+audio {
+    width: 100%;
+    margin-top: 0.6rem;
+}
+
+@media (max-width: 980px) {
+
+    .selector-shell,
+    .mode-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .mode-header {
+        flex-direction: column;
+    }
+
+    .call-actions,
+    .status-grid {
+        grid-template-columns: 1fr;
+    }
+}

@@ -1,0 +1,6 @@
+services:
+  janus:
+    image: local/janus-gateway:v1.3.3
+    build:
+      context: .
+      dockerfile: infra/janus/Dockerfile.v1.3.3

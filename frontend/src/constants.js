@@ -1,0 +1,29 @@
+export const ROOM_MODES = Object.freeze({
+    WALKIE_TALKIE: 'walkie-talkie',
+    PHONE_CALL: 'phone-call',
+});
+
+export const SOCKET_EVENTS = Object.freeze({
+    JOIN_ROOM: 'join-room',
+    LEAVE_ROOM: 'leave-room',
+    ROOM_JOINED: 'room-joined',
+    ROOM_STATE: 'room-state',
+    OFFER: 'offer',
+    ANSWER: 'answer',
+    ICE_CANDIDATE: 'ice-candidate',
+    PTT_START: 'ptt-start',
+    PTT_STOP: 'ptt-stop',
+    PTT_BUSY: 'ptt-busy',
+    PTT_PLAYBACK_STARTED: 'ptt-playback-started',
+    PTT_PLAYBACK_ENDED: 'ptt-playback-ended',
+    CALL_REQUEST: 'call-request',
+    CALL_ACCEPT: 'call-accept',
+    CALL_REJECT: 'call-reject',
+    CALL_END: 'call-end',
+    CALL_MUTE: 'call-mute',
+    INCOMING_CALL: 'incoming-call',
+    CALL_ACCEPTED: 'call-accepted',
+    CALL_REJECTED: 'call-rejected',
+    CALL_ENDED: 'call-ended',
+    APP_ERROR: 'app-error',
+});

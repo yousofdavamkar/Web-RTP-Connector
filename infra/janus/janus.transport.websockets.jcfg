@@ -1,0 +1,14 @@
+general: {
+    json = "indented"
+    ws = true
+    ws_port = 8188
+    ws_ip = "0.0.0.0"
+    wss = false
+}
+
+admin: {
+    admin_ws = true
+    admin_ws_port = 7188
+    admin_ws_ip = "0.0.0.0"
+    admin_wss = false
+}

@@ -1,0 +1,47 @@
+FROM ubuntu:24.04
+
+ARG JANUS_TAG=v1.3.3
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        git \
+        build-essential \
+        pkg-config \
+        autoconf \
+        automake \
+        libtool \
+        cmake \
+        gengetopt \
+        libmicrohttpd-dev \
+        libjansson-dev \
+        libssl-dev \
+        libsrtp2-dev \
+        libsofia-sip-ua-dev \
+        libglib2.0-dev \
+        libopus-dev \
+        libogg-dev \
+        libcurl4-openssl-dev \
+        liblua5.3-dev \
+        libconfig-dev \
+        libnice-dev \
+        libwebsockets-dev \
+        libusrsctp-dev \
+        libnanomsg-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt
+RUN git clone --depth 1 --branch ${JANUS_TAG} https://github.com/meetecho/janus-gateway.git janus-gateway
+
+WORKDIR /opt/janus-gateway
+RUN sh autogen.sh \
+    && ./configure --prefix=/usr/local --disable-docs \
+    && make -j"$(nproc)" \
+    && make install \
+    && make configs \
+    && ldconfig
+
+EXPOSE 8088 8188 7088 7188 6004/udp 10000-10200/udp
+
+CMD ["/usr/local/bin/janus"]

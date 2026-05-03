@@ -1,0 +1,18 @@
+general: {
+    admin_key = "streaming-admin-key"
+    events = false
+}
+
+rtp-walkie-demo: {
+    type = "rtp"
+    id = 9001
+    description = "Static Walkie-Talkie Verification Mountpoint"
+    metadata = "{\"mode\":\"walkie-talkie\",\"source\":\"static-demo\"}"
+    is_private = false
+    audio = true
+    video = false
+    audioport = 6004
+    audiopt = 111
+    audiocodec = "opus"
+    audiofmtp = "minptime=10;useinbandfec=1;stereo=1"
+}

@@ -1,0 +1,20 @@
+general: {
+    admin_key = "audiobridge-admin-key"
+    events = false
+}
+
+room-7001: {
+    description = "Static Phone Call Verification Room"
+    is_private = false
+    sampling_rate = 48000
+    audiolevel_ext = true
+    audiolevel_event = true
+    audio_active_packets = 100
+    audio_level_average = 25
+    default_expectedloss = 0
+    default_bitrate = 64000
+    denoise = false
+    record = false
+    mjrs = false
+    allow_rtp_participants = true
+}
