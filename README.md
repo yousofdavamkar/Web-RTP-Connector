@@ -37,6 +37,36 @@ flowchart LR
 	Janus <-->|RTP forwarders and RTP participants| RTP
 ```
 
+Plain-text fallback:
+
+```text
+Browser clients
+	|
+	| HTTPS
+	v
+Caddy HTTPS gateway (:443)
+	|-----------------------------> Frontend (React + Vite)
+	|                               static app
+	|
+	| /api, /socket.io, /health
+	v
+Backend (Express + Socket.IO)
+	|-----------------------------> Janus Gateway (Streaming + AudioBridge)
+	|                               WebSocket control + Opus RTP ingest
+	|
+	+<---------------------------- Browser clients
+	|                              PTT clip upload
+	|
+	+-----------------------------> Browser clients
+	|                              room state + signaling
+
+Browser clients <---------------> Janus Gateway
+			 WebRTC audio
+
+External RTP tools or radios <-> Janus Gateway
+			 RTP forwarders + RTP participants
+```
+
 - Caddy is the public entrypoint for browsers and forwards static UI requests to the frontend plus API and Socket.IO traffic to the backend.
 - The backend owns room state and Janus control, and it converts push-to-talk uploads into Opus RTP for Janus Streaming.
 - Janus is the media plane: browsers use WebRTC with Janus directly, while external tools use plain RTP through AudioBridge forwarders or participants.
