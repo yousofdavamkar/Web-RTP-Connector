@@ -14,7 +14,7 @@ const mimeToExtension = (mimeType) => {
 };
 
 export class PttRtpPublisher extends EventEmitter {
-    constructor({ ffmpegPath, host, payloadType = 111, sampleRate = 48000, channels = 2, tempDirectory, maxBytes = 10 * 1024 * 1024, spawnProcess = spawn }) {
+    constructor({ ffmpegPath, host, payloadType = 111, sampleRate = 48000, channels = 1, tempDirectory, maxBytes = 10 * 1024 * 1024, spawnProcess = spawn }) {
         super();
         this.ffmpegPath = ffmpegPath;
         this.host = host;
@@ -79,12 +79,18 @@ export class PttRtpPublisher extends EventEmitter {
             'libopus',
             '-application',
             'voip',
+            '-b:a',
+            '48k',
+            '-vbr',
+            'constrained',
             '-ar',
             String(this.sampleRate),
             '-ac',
             String(this.channels),
             '-frame_duration',
             '20',
+            '-packet_loss',
+            '15',
             '-f',
             'rtp',
             '-payload_type',

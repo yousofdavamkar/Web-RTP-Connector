@@ -108,7 +108,7 @@ export class JanusClient extends EventEmitter {
                     port: audioPort,
                     pt: 111,
                     codec: 'opus',
-                    fmtp: 'minptime=10;useinbandfec=1;stereo=1',
+                    fmtp: 'minptime=10;useinbandfec=1;stereo=0;maxaveragebitrate=48000',
                 },
             ],
         });
@@ -132,7 +132,8 @@ export class JanusClient extends EventEmitter {
             room,
             description,
             sampling_rate: 48000,
-            default_bitrate: 64000,
+            default_bitrate: 128000,
+            opus_fec: true,
             audiolevel_ext: true,
             audiolevel_event: true,
             allow_rtp_participants: true,

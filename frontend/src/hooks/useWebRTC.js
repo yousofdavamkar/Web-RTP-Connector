@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { ROOM_MODES, SOCKET_EVENTS } from '../constants.js';
+import { requestVoiceAudioStream } from '../media.js';
 
 const rtcConfig = {
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
@@ -112,16 +113,7 @@ export const useWebRTC = ({ socket, roomId, mode }) => {
         }
 
         const getUserMedia = getUserMediaOrThrow();
-        const stream = await getUserMedia({
-            audio: {
-                channelCount: 2,
-                sampleRate: 48000,
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-            },
-            video: false,
-        });
+        const stream = await requestVoiceAudioStream(getUserMedia);
 
         localStreamRef.current = stream;
         setLocalStream(stream);

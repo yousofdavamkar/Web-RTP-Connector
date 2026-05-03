@@ -23,6 +23,8 @@ services:
     build:
       context: ./backend
     restart: unless-stopped
+    ports:
+      - "4000:4000"
     environment:
       SIGNALING_PORT: 4000
       CLIENT_ORIGIN: "*"
@@ -41,43 +43,5 @@ services:
     build:
       context: ./frontend
     restart: unless-stopped
-
-  gateway:
-    image: caddy:2.8-alpine
-    restart: unless-stopped
-    depends_on:
-      - backend
-      - frontend
-    command:
-      - /bin/sh
-      - -lc
-      - |
-        cat >/etc/caddy/Caddyfile <<EOF
-        {
-            default_sni ${LAN_HOST_IP:-127.0.0.1}
-        }
-
-        http://localhost, http://${LAN_HOST_IP:-127.0.0.1} {
-            redir https://{host}{uri}
-        }
-
-        https://localhost, https://${LAN_HOST_IP:-127.0.0.1} {
-            tls internal
-
-            reverse_proxy /api/* backend:4000
-            reverse_proxy /socket.io/* backend:4000
-            reverse_proxy /health backend:4000
-            reverse_proxy frontend:4173
-        }
-        EOF
-        exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
     ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - caddy_data:/data
-      - caddy_config:/config
-
-volumes:
-  caddy_data:
-  caddy_config:
+      - "4173:4173"
