@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { ROOM_MODES, SOCKET_EVENTS } from '../constants.js';
 import { usePushToTalk } from '../hooks/usePushToTalk.js';
@@ -7,6 +7,7 @@ import { AudioVisualizer } from './AudioVisualizer.jsx';
 
 export const WalkieTalkieRoom = ({ room, socket, onLeave }) => {
     const audioRef = useRef(null);
+    const [playbackBlocked, setPlaybackBlocked] = useState(false);
     const { connectionState, remoteStream } = useWebRTC({ socket, roomId: room.roomId, mode: ROOM_MODES.WALKIE_TALKIE });
     const { error, isRecording, liveStream, publishState, startTalking, stopTalking } = usePushToTalk({
         socket,
@@ -33,6 +34,23 @@ export const WalkieTalkieRoom = ({ room, socket, onLeave }) => {
         stopTalking();
     };
 
+    const unlockRemotePlayback = async () => {
+        if (!audioRef.current || !remoteStream || isOwnPlayback) {
+            setPlaybackBlocked(false);
+            return;
+        }
+
+        audioRef.current.muted = false;
+        audioRef.current.volume = 1;
+
+        try {
+            await audioRef.current.play();
+            setPlaybackBlocked(false);
+        } catch {
+            setPlaybackBlocked(true);
+        }
+    };
+
     useEffect(() => {
         socket.emit(SOCKET_EVENTS.JOIN_ROOM, {
             roomId: room.roomId,
@@ -50,7 +68,24 @@ export const WalkieTalkieRoom = ({ room, socket, onLeave }) => {
             audioRef.current.srcObject = remoteStream;
             audioRef.current.muted = isOwnPlayback;
             audioRef.current.volume = 1;
-            audioRef.current.play().catch(() => { });
+            if (!remoteStream) {
+                setPlaybackBlocked(false);
+                return;
+            }
+
+            if (isOwnPlayback) {
+                setPlaybackBlocked(false);
+            }
+
+            audioRef.current.play().then(() => {
+                if (!isOwnPlayback) {
+                    setPlaybackBlocked(false);
+                }
+            }).catch(() => {
+                if (!isOwnPlayback) {
+                    setPlaybackBlocked(true);
+                }
+            });
         }
     }, [isOwnPlayback, remoteStream]);
 
@@ -86,6 +121,15 @@ export const WalkieTalkieRoom = ({ room, socket, onLeave }) => {
                     </button>
 
                     <AudioVisualizer active={isRecording} stream={liveStream} />
+
+                    {playbackBlocked ? (
+                        <div className="incoming-call-card">
+                            <p>Remote audio is waiting for browser playback permission.</p>
+                            <button className="secondary-button" onClick={unlockRemotePlayback} type="button">
+                                Enable audio
+                            </button>
+                        </div>
+                    ) : null}
 
                     <div className="status-grid">
                         <div>
