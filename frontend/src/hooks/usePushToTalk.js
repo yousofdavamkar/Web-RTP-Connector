@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { SOCKET_EVENTS } from '../constants.js';
+import { requestVoiceAudioStream } from '../media.js';
 
 const preferredMimeTypes = [
     'audio/webm;codecs=opus',
@@ -83,16 +84,7 @@ export const usePushToTalk = ({ socket, roomId, activeSpeakerSocketId }) => {
 
         try {
             const getUserMedia = getUserMediaOrThrow();
-            const stream = await getUserMedia({
-                audio: {
-                    channelCount: 2,
-                    sampleRate: 48000,
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true,
-                },
-                video: false,
-            });
+            const stream = await requestVoiceAudioStream(getUserMedia);
 
             if (startRequestIdRef.current !== requestId || !pressActiveRef.current || pendingStopRef.current) {
                 for (const track of stream.getTracks()) {
