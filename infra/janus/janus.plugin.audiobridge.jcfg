@@ -12,7 +12,8 @@ room-7001: {
     audio_active_packets = 100
     audio_level_average = 25
     default_expectedloss = 0
-    default_bitrate = 64000
+    default_bitrate = 128000
+    opus_fec = true
     denoise = false
     record = false
     mjrs = false

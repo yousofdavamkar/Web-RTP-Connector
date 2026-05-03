@@ -1,5 +1,8 @@
 import dotenv from 'dotenv';
+import { createRequire } from 'node:module';
 import path from 'node:path';
+
+const require = createRequire(import.meta.url);
 
 dotenv.config({ path: path.resolve(process.cwd(), '../.env') });
 dotenv.config();
@@ -9,10 +12,29 @@ const parseInteger = (value, fallback) => {
     return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const resolveBundledFfmpegPath = () => {
+    try {
+        return require('ffmpeg-static');
+    } catch {
+        return null;
+    }
+};
+
+const resolveFfmpegPath = () => {
+    const configuredPath = process.env.FFMPEG_PATH?.trim();
+    const bundledPath = resolveBundledFfmpegPath();
+
+    if (configuredPath && configuredPath !== 'ffmpeg') {
+        return configuredPath;
+    }
+
+    return bundledPath ?? configuredPath ?? 'ffmpeg';
+};
+
 const parseClientOrigin = (value) => {
     const normalized = value?.trim();
     if (!normalized) {
-        return 'http://localhost:5173';
+        return true;
     }
     if (normalized === '*') {
         return true;
@@ -44,7 +66,7 @@ export const config = {
         streamingPortStart: parseInteger(process.env.JANUS_STREAMING_PORT_START, 5004),
         streamingPortEnd: parseInteger(process.env.JANUS_STREAMING_PORT_END, 5098),
     },
-    ffmpegPath: process.env.FFMPEG_PATH ?? 'ffmpeg',
+    ffmpegPath: resolveFfmpegPath(),
     maxPttBytes: parseInteger(process.env.MAX_PTT_BYTES, 10 * 1024 * 1024),
     tempDirectory: path.resolve(process.cwd(), 'tmp'),
 };

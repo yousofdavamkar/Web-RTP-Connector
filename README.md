@@ -83,6 +83,8 @@ External RTP tools or radios <-> Janus Gateway
 3. The backend invokes FFmpeg and sends Opus RTP to a Janus Streaming mountpoint.
 4. Janus exposes that stream to listeners over WebRTC.
 
+The walkie-talkie path is tuned for speech: mono Opus, constrained VBR, and in-band FEC for steadier voice quality on weak links.
+
 ### Phone-call mode
 
 1. Browsers negotiate WebRTC audio against Janus AudioBridge.
@@ -98,6 +100,8 @@ External RTP tools or radios <-> Janus Gateway
 - Node.js 20+ if you want to run workspace scripts such as `npm test`
 - A browser with microphone access
 - Optional: VLC for RTP interoperability checks
+
+For local backend runs outside Docker, the app falls back to a bundled `ffmpeg` binary. Set `FFMPEG_PATH` only if you want to override that with a specific executable.
 
 ### 1. Set LAN access if needed
 

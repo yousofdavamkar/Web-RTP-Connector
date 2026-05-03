@@ -14,5 +14,5 @@ rtp-walkie-demo: {
     audioport = 6004
     audiopt = 111
     audiocodec = "opus"
-    audiofmtp = "minptime=10;useinbandfec=1;stereo=1"
+    audiofmtp = "minptime=10;useinbandfec=1;stereo=0;maxaveragebitrate=48000"
 }
