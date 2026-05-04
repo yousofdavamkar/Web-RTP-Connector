@@ -65,6 +65,17 @@ export const config = {
         rtpForwardPort: parseInteger(process.env.JANUS_RTP_FORWARD_PORT, 7000),
         streamingPortStart: parseInteger(process.env.JANUS_STREAMING_PORT_START, 5004),
         streamingPortEnd: parseInteger(process.env.JANUS_STREAMING_PORT_END, 5098),
+        streamingMountpointIdStart: parseInteger(process.env.JANUS_STREAMING_MOUNTPOINT_ID_START, 4100),
+        streamingMountpointIdEnd: parseInteger(process.env.JANUS_STREAMING_MOUNTPOINT_ID_END, 4999),
+    },
+    walkieRtp: {
+        publicHost: process.env.WALKIE_RTP_PUBLIC_HOST?.trim()
+            || process.env.LAN_HOST_IP?.trim()
+            || '127.0.0.1',
+        portStart: parseInteger(process.env.WALKIE_RTP_PORT_START, 7004),
+        portEnd: parseInteger(process.env.WALKIE_RTP_PORT_END, 7098),
+        inputCodec: process.env.WALKIE_RTP_INPUT_CODEC?.trim().toLowerCase() || 'pcmu',
+        inputPayloadType: parseInteger(process.env.WALKIE_RTP_INPUT_PAYLOAD_TYPE, 0),
     },
     ffmpegPath: resolveFfmpegPath(),
     maxPttBytes: parseInteger(process.env.MAX_PTT_BYTES, 10 * 1024 * 1024),

@@ -1,8 +1,10 @@
 import { ROOM_MODES } from '../constants.js';
+import { primeAudioPlayback } from '../audioPlayback.js';
 
 export const RoomSelector = ({ rooms, onJoin, pending, error }) => {
     const handleSubmit = (event) => {
         event.preventDefault();
+        void primeAudioPlayback();
         const formData = new FormData(event.currentTarget);
         onJoin({
             displayName: formData.get('displayName')?.toString() ?? '',

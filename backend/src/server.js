@@ -5,12 +5,13 @@ import cors from 'cors';
 import morgan from 'morgan';
 import { Server as SocketIOServer } from 'socket.io';
 
-import { config } from './config.js';
+import { config, socketEventNames } from './config.js';
 import { createRoomsRouter } from './routes/rooms.js';
 import { JanusClient } from './services/janusClient.js';
 import { PttRtpPublisher } from './services/pttRtpPublisher.js';
+import { WalkieRtpGateway } from './services/walkieRtpGateway.js';
 import { registerSocketHandlers } from './socket/registerSocketHandlers.js';
-import { RoomStore } from './state/roomStore.js';
+import { RoomStore, createExternalWalkieOwnerId } from './state/roomStore.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -37,6 +38,8 @@ const roomStore = new RoomStore({
     janusClient,
     portRangeStart: config.janus.streamingPortStart,
     portRangeEnd: config.janus.streamingPortEnd,
+    externalWalkiePortStart: config.walkieRtp.portStart,
+    externalWalkiePortEnd: config.walkieRtp.portEnd,
 });
 
 const pttPublisher = new PttRtpPublisher({
@@ -45,6 +48,19 @@ const pttPublisher = new PttRtpPublisher({
     tempDirectory: config.tempDirectory,
     maxBytes: config.maxPttBytes,
 });
+
+const walkieRtpGateway = new WalkieRtpGateway({
+    ffmpegPath: config.ffmpegPath,
+    outputHost: config.janus.streamingBindHost,
+    tempDirectory: config.tempDirectory,
+});
+
+const emitRoomState = (roomId) => {
+    const room = roomStore.getRoom(roomId);
+    if (room) {
+        io.to(roomId).emit(socketEventNames.roomState, roomStore.serializeRoom(room));
+    }
+};
 
 app.use(
     cors({
@@ -64,7 +80,13 @@ app.get('/health', (_request, response) => {
     });
 });
 
-app.use('/api/rooms', createRoomsRouter({ roomStore, janusClient, config }));
+app.use('/api/rooms', createRoomsRouter({
+    roomStore,
+    janusClient,
+    config,
+    walkieRtpGateway,
+    notifyRoomState: emitRoomState,
+}));
 
 app.use((error, _request, response, _next) => {
     const status = error.message?.includes('not found') ? 404 : 500;
@@ -72,6 +94,17 @@ app.use((error, _request, response, _next) => {
 });
 
 registerSocketHandlers({ io, roomStore, janusClient, pttPublisher });
+
+walkieRtpGateway.on('session-error', ({ roomId, participantId, error }) => {
+    roomStore.releasePtt(roomId, createExternalWalkieOwnerId(participantId));
+    emitRoomState(roomId);
+    console.warn(`[walkie-rtp:error] room=${roomId} participant=${participantId} ${error.message}`);
+});
+
+walkieRtpGateway.on('session-stopped', ({ roomId, participantId }) => {
+    roomStore.releasePtt(roomId, createExternalWalkieOwnerId(participantId));
+    emitRoomState(roomId);
+});
 
 const scheduleJanusBootstrap = (delayMs = 0) => {
     if (shuttingDown || janusReconnectTimer) {
@@ -83,6 +116,13 @@ const scheduleJanusBootstrap = (delayMs = 0) => {
 
         try {
             await janusClient.ensureSession();
+            // Destroy stale dynamic streaming mountpoints left over from previous backend sessions.
+            await janusClient.destroyStaleDynamicMountpoints({
+                idRangeStart: config.janus.streamingMountpointIdStart,
+                idRangeEnd: config.janus.streamingMountpointIdEnd,
+            }).catch((error) => {
+                console.warn(`Stale mountpoint cleanup failed (non-fatal): ${error.message}`);
+            });
         } catch (error) {
             console.warn(`Janus bootstrap failed: ${error.message}`);
             scheduleJanusBootstrap(JANUS_RETRY_DELAY_MS);
@@ -109,6 +149,7 @@ const shutdown = async () => {
     janusReconnectTimer = null;
     io.close();
     server.close();
+    await walkieRtpGateway.close();
     await janusClient.close();
     process.exit(0);
 };

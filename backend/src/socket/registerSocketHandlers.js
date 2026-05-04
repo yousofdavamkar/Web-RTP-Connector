@@ -15,6 +15,9 @@ export const registerSocketHandlers = ({ io, roomStore, janusClient, pttPublishe
     const streamingCallbacks = (socket, roomId, socketId) => ({
         onEvent: (message) => {
             if (message.jsep) {
+                console.info(
+                    `[janus-streaming] Relaying offer room=${roomId} socket=${socketId} type=${message.jsep.type} status=${message.plugindata?.data?.status ?? 'n/a'}`,
+                );
                 socket.emit(socketEventNames.offer, {
                     roomId,
                     mode: roomModes.WALKIE_TALKIE,
@@ -117,6 +120,7 @@ export const registerSocketHandlers = ({ io, roomStore, janusClient, pttPublishe
         if (!participant) {
             return;
         }
+        console.trace(`[cleanup] streaming=${participant.streamingHandleId}`);
         await janusClient.detachHandle(participant.streamingHandleId);
         await janusClient.detachHandle(participant.audioBridgeHandleId);
     };
@@ -226,7 +230,13 @@ export const registerSocketHandlers = ({ io, roomStore, janusClient, pttPublishe
                 if (!participant?.streamingHandleId) {
                     throw new Error('There is no active Janus streaming subscription for this socket.');
                 }
+                console.info(
+                    `[janus-streaming] Received browser answer socket=${socket.id} handle=${participant.streamingHandleId} type=${jsep?.type ?? 'unknown'}; sending start`,
+                );
                 await janusClient.pluginMessage(participant.streamingHandleId, { request: 'start' }, jsep);
+                console.info(
+                    `[janus-streaming] Start sent socket=${socket.id} handle=${participant.streamingHandleId}`,
+                );
             } catch (error) {
                 emitSocketError(socket, error);
             }

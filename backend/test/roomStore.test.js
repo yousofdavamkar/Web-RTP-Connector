@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { RoomStore } from '../src/state/roomStore.js';
+import { RoomStore, createExternalWalkieOwnerId } from '../src/state/roomStore.js';
 
 const createMockJanusClient = () => ({
     async createStreamingMountpoint() {
@@ -66,4 +66,45 @@ test('RoomStore manages participant state, PTT locks, and call lifecycle', async
     });
     assert.equal(external.externalParticipantId, 'ext-1');
     assert.equal(roomStore.removeExternalRtpParticipant('alpha', 'ext-1')?.externalParticipantId, 'ext-1');
+});
+
+test('RoomStore manages external walkie participants and external PTT owners', async () => {
+    const roomStore = new RoomStore({
+        janusClient: createMockJanusClient(),
+        portRangeStart: 5004,
+        portRangeEnd: 5008,
+        externalWalkiePortStart: 7004,
+        externalWalkiePortEnd: 7008,
+    });
+    await roomStore.createRoom({ roomId: 'alpha', name: 'Alpha Room' });
+
+    const ingestPort = roomStore.allocateExternalWalkiePort();
+    const participant = roomStore.addExternalWalkieParticipant('alpha', {
+        externalParticipantId: 'vlc-1',
+        displayName: 'VLC Desk Mic',
+        inputCodec: 'pcmu',
+        payloadType: 0,
+        ingestHost: '127.0.0.1',
+        ingestPort,
+        createdAt: new Date().toISOString(),
+    });
+
+    assert.equal(participant.ingestPort, 7004);
+
+    const ownerId = createExternalWalkieOwnerId(participant.externalParticipantId);
+    assert.equal(roomStore.claimPtt('alpha', ownerId), true);
+
+    const room = roomStore.serializeRoom(roomStore.getRoom('alpha'));
+    assert.equal(room.activePttSpeaker, ownerId);
+    assert.deepEqual(room.activePttSource, {
+        type: 'external-walkie',
+        externalParticipantId: 'vlc-1',
+        displayName: 'VLC Desk Mic',
+    });
+    assert.equal(room.externalWalkieParticipants.length, 1);
+    assert.equal(room.externalWalkieParticipants[0].isTransmitting, true);
+
+    assert.equal(roomStore.removeExternalWalkieParticipant('alpha', 'vlc-1')?.externalParticipantId, 'vlc-1');
+    assert.equal(roomStore.getRoom('alpha').activePttSpeaker, null);
+    assert.equal(roomStore.allocateExternalWalkiePort(), 7004);
 });
