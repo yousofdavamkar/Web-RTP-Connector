@@ -53,6 +53,94 @@ const serializeWalkieParticipant = (roomStore, roomId, externalParticipantId) =>
 
 export const createRoomsRouter = ({ roomStore, janusClient, config, walkieRtpGateway, notifyRoomState = () => { } }) => {
     const router = express.Router();
+    const autoRadioRearmTimers = new Map();
+
+    const maybeStartAutoRadioSession = async ({ roomId, participant }) => {
+        const room = roomStore.getRoom(roomId);
+        if (!room) {
+            return;
+        }
+
+        const existingSession = walkieRtpGateway.getSession(participant.externalParticipantId);
+        if (existingSession) {
+            return;
+        }
+
+        await walkieRtpGateway.startSession({
+            roomId,
+            participantId: participant.externalParticipantId,
+            inputPort: participant.ingestPort,
+            inputCodec: participant.inputCodec,
+            inputPayloadType: participant.payloadType,
+            outputPort: room.janus.streamingPort,
+        });
+
+        console.info(`[walkie-rtp:auto-start] room=${roomId} participant=${participant.externalParticipantId} src=${participant.ingestHost}:${participant.ingestPort} dst=${config.janus.streamingBindHost}:${room.janus.streamingPort}`);
+        notifyRoomState(roomId);
+    };
+
+    const ensureAutoRadioParticipant = async (roomId) => {
+        if (!config.walkieRtp.autoRadio.enabled) {
+            return;
+        }
+
+        const room = roomStore.getRoom(roomId);
+        if (!room) {
+            return;
+        }
+
+        let participant = roomStore.getExternalWalkieParticipant(roomId, config.walkieRtp.autoRadio.participantId);
+        if (!participant) {
+            const ingestPort = roomStore.allocateExternalWalkiePort();
+            try {
+                participant = roomStore.addExternalWalkieParticipant(roomId, {
+                    externalParticipantId: config.walkieRtp.autoRadio.participantId,
+                    displayName: config.walkieRtp.autoRadio.displayName,
+                    inputCodec: config.walkieRtp.inputCodec,
+                    payloadType: config.walkieRtp.inputPayloadType,
+                    ingestHost: config.walkieRtp.publicHost,
+                    ingestPort,
+                    createdAt: new Date().toISOString(),
+                    autoManaged: true,
+                });
+                console.info(`[walkie-rtp:auto-create] room=${roomId} participant=${participant.externalParticipantId} codec=${participant.inputCodec} pt=${participant.payloadType} listen=${participant.ingestHost}:${participant.ingestPort}`);
+                notifyRoomState(roomId);
+            } catch (error) {
+                roomStore.releaseExternalWalkiePort(ingestPort);
+                throw error;
+            }
+        }
+
+        try {
+            await maybeStartAutoRadioSession({ roomId, participant });
+        } catch (error) {
+            console.warn(`[walkie-rtp:auto-start-failed] room=${roomId} participant=${participant.externalParticipantId} ${error.message}`);
+        }
+
+        if (!autoRadioRearmTimers.has(roomId)) {
+            const rearmIntervalMs = Math.max(1, config.walkieRtp.autoRadio.rearmIntervalSec) * 1000;
+            const timer = setInterval(() => {
+                const current = roomStore.getExternalWalkieParticipant(roomId, config.walkieRtp.autoRadio.participantId);
+                if (!current) {
+                    return;
+                }
+
+                maybeStartAutoRadioSession({ roomId, participant: current }).catch((error) => {
+                    console.warn(`[walkie-rtp:auto-rearm-failed] room=${roomId} participant=${current.externalParticipantId} ${error.message}`);
+                });
+            }, rearmIntervalMs);
+            timer.unref?.();
+            autoRadioRearmTimers.set(roomId, timer);
+        }
+    };
+
+    const clearAutoRadioRearm = (roomId) => {
+        const timer = autoRadioRearmTimers.get(roomId);
+        if (timer) {
+            clearInterval(timer);
+            autoRadioRearmTimers.delete(roomId);
+        }
+    };
 
     router.get('/', (_request, response) => {
         response.json({ rooms: roomStore.listRooms() });
@@ -64,11 +152,13 @@ export const createRoomsRouter = ({ roomStore, janusClient, config, walkieRtpGat
                 roomId: request.body.roomId,
                 name: request.body.name,
             });
+            await ensureAutoRadioParticipant(room.roomId);
             response.status(201).json({ room: roomStore.serializeRoom(room) });
         } catch (error) {
             if (error.message?.includes('already exists')) {
                 const existingRoom = roomStore.getRoom(request.body.roomId?.trim());
                 if (existingRoom) {
+                    await ensureAutoRadioParticipant(existingRoom.roomId);
                     response.status(200).json({ room: roomStore.serializeRoom(existingRoom) });
                     return;
                 }
@@ -108,6 +198,7 @@ export const createRoomsRouter = ({ roomStore, janusClient, config, walkieRtpGat
 
     router.delete('/:roomId', async (request, response, next) => {
         try {
+            clearAutoRadioRearm(request.params.roomId);
             await walkieRtpGateway.stopRoomSessions(request.params.roomId);
             const removed = await roomStore.deleteRoom(request.params.roomId);
             if (!removed) {

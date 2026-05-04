@@ -12,6 +12,22 @@ const parseInteger = (value, fallback) => {
     return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const parseBoolean = (value, fallback = false) => {
+    if (typeof value !== 'string') {
+        return fallback;
+    }
+
+    const normalized = value.trim().toLowerCase();
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+        return true;
+    }
+    if (['0', 'false', 'no', 'off'].includes(normalized)) {
+        return false;
+    }
+
+    return fallback;
+};
+
 const resolveBundledFfmpegPath = () => {
     try {
         return require('ffmpeg-static');
@@ -76,6 +92,19 @@ export const config = {
         portEnd: parseInteger(process.env.WALKIE_RTP_PORT_END, 7098),
         inputCodec: process.env.WALKIE_RTP_INPUT_CODEC?.trim().toLowerCase() || 'pcmu',
         inputPayloadType: parseInteger(process.env.WALKIE_RTP_INPUT_PAYLOAD_TYPE, 0),
+        autoRadio: {
+            enabled: parseBoolean(process.env.WALKIE_RTP_AUTO_RADIO_ENABLED, false),
+            participantId: process.env.WALKIE_RTP_AUTO_RADIO_ID?.trim() || 'auto-radio',
+            displayName: process.env.WALKIE_RTP_AUTO_RADIO_DISPLAY_NAME?.trim() || 'Radio Gateway',
+            rearmIntervalSec: parseInteger(process.env.WALKIE_RTP_AUTO_RADIO_REARM_SEC, 3),
+        },
+        browserMirror: {
+            enabled: parseBoolean(process.env.WALKIE_RTP_BROWSER_MIRROR_ENABLED, false),
+            host: process.env.WALKIE_RTP_BROWSER_MIRROR_HOST?.trim() || '',
+            port: parseInteger(process.env.WALKIE_RTP_BROWSER_MIRROR_PORT, 0),
+            codec: process.env.WALKIE_RTP_BROWSER_MIRROR_CODEC?.trim().toLowerCase() || 'pcma',
+            payloadType: parseInteger(process.env.WALKIE_RTP_BROWSER_MIRROR_PAYLOAD_TYPE, 8),
+        },
     },
     ffmpegPath: resolveFfmpegPath(),
     maxPttBytes: parseInteger(process.env.MAX_PTT_BYTES, 10 * 1024 * 1024),
@@ -91,6 +120,7 @@ export const socketEventNames = Object.freeze({
     answer: 'answer',
     iceCandidate: 'ice-candidate',
     pttStart: 'ptt-start',
+    pttChunk: 'ptt-chunk',
     pttStop: 'ptt-stop',
     pttBusy: 'ptt-busy',
     pttPlaybackStarted: 'ptt-playback-started',

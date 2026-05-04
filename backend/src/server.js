@@ -47,6 +47,15 @@ const pttPublisher = new PttRtpPublisher({
     host: config.janus.streamingBindHost,
     tempDirectory: config.tempDirectory,
     maxBytes: config.maxPttBytes,
+    mirrorTarget: {
+        enabled: config.walkieRtp.browserMirror.enabled,
+        host: config.walkieRtp.browserMirror.host,
+        port: config.walkieRtp.browserMirror.port,
+        codec: config.walkieRtp.browserMirror.codec,
+        payloadType: config.walkieRtp.browserMirror.payloadType,
+        sampleRate: config.walkieRtp.browserMirror.codec === 'opus' ? 48000 : 8000,
+        channels: 1,
+    },
 });
 
 const walkieRtpGateway = new WalkieRtpGateway({
