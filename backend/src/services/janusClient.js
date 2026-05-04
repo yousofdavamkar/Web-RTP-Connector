@@ -91,7 +91,7 @@ export class JanusClient extends EventEmitter {
 
     async createStreamingMountpoint({ id, name, description, audioPort }) {
         const handleId = await this.#ensureAdminHandle('janus.plugin.streaming');
-        const response = await this.pluginMessage(handleId, {
+        const doCreate = () => this.pluginMessage(handleId, {
             request: 'create',
             admin_key: this.streamingAdminKey,
             type: 'rtp',
@@ -108,11 +108,27 @@ export class JanusClient extends EventEmitter {
                     port: audioPort,
                     pt: 111,
                     codec: 'opus',
-                    fmtp: 'minptime=10;useinbandfec=1;stereo=1',
+                    fmtp: 'minptime=10;useinbandfec=1;stereo=0;maxaveragebitrate=48000',
                 },
             ],
         });
-        return response.plugindata?.data ?? response;
+
+        let response = await doCreate();
+        let data = response.plugindata?.data ?? response;
+
+        if (data.streaming === 'error') {
+            if (typeof data.error === 'string' && data.error.toLowerCase().includes('already exists')) {
+                // Stale mountpoint from a previous backend session — destroy it and recreate.
+                await this.destroyStreamingMountpoint(id).catch(() => { });
+                response = await doCreate();
+                data = response.plugindata?.data ?? response;
+            }
+            if (data.streaming === 'error') {
+                throw new Error(`Janus streaming error: ${data.error ?? JSON.stringify(data)}`);
+            }
+        }
+
+        return data;
     }
 
     async destroyStreamingMountpoint(id) {
@@ -124,15 +140,41 @@ export class JanusClient extends EventEmitter {
         });
     }
 
+    async listStreamingMountpoints() {
+        const handleId = await this.#ensureAdminHandle('janus.plugin.streaming');
+        const response = await this.pluginMessage(handleId, { request: 'list' });
+        return response.plugindata?.data?.list ?? [];
+    }
+
+    /**
+     * Destroys all non-permanent streaming mountpoints with IDs in [idRangeStart, idRangeEnd].
+     * Called on backend startup to clear stale mountpoints left over from previous sessions.
+     */
+    async destroyStaleDynamicMountpoints({ idRangeStart, idRangeEnd }) {
+        let mountpoints;
+        try {
+            mountpoints = await this.listStreamingMountpoints();
+        } catch {
+            return;
+        }
+
+        const toDestroy = mountpoints.filter(
+            (m) => !m.permanent && m.id >= idRangeStart && m.id <= idRangeEnd,
+        );
+
+        await Promise.allSettled(toDestroy.map((m) => this.destroyStreamingMountpoint(m.id)));
+    }
+
     async createAudioBridgeRoom({ room, description }) {
         const handleId = await this.#ensureAdminHandle('janus.plugin.audiobridge');
-        const response = await this.pluginMessage(handleId, {
+        const doCreate = () => this.pluginMessage(handleId, {
             request: 'create',
             admin_key: this.audioBridgeAdminKey,
             room,
             description,
             sampling_rate: 48000,
-            default_bitrate: 64000,
+            default_bitrate: 128000,
+            opus_fec: true,
             audiolevel_ext: true,
             audiolevel_event: true,
             allow_rtp_participants: true,
@@ -140,7 +182,22 @@ export class JanusClient extends EventEmitter {
             mjrs: false,
             permanent: false,
         });
-        return response.plugindata?.data ?? response;
+
+        let response = await doCreate();
+        let data = response.plugindata?.data ?? response;
+
+        if (data.audiobridge === 'event' && data.error_code === 486) {
+            // Room already exists from a previous backend session — destroy and recreate.
+            await this.destroyAudioBridgeRoom(room).catch(() => { });
+            response = await doCreate();
+            data = response.plugindata?.data ?? response;
+        }
+
+        if (data.audiobridge === 'event' && data.error) {
+            throw new Error(`Janus AudioBridge error: ${data.error}`);
+        }
+
+        return data;
     }
 
     async destroyAudioBridgeRoom(room) {

@@ -1,6 +1,6 @@
 # RTP Voice Application
 
-This repository contains a Docker-first voice application that combines a React frontend, a Node.js signaling service, Janus Gateway, and a Caddy HTTPS gateway. It supports browser-native voice rooms and RTP interoperability for external tools and devices.
+This repository contains a Docker-first voice application that combines a React frontend, a Node.js signaling service, and Janus Gateway. It supports browser-native voice rooms and RTP interoperability for external tools and devices.
 
 ## What It Supports
 
@@ -20,16 +20,17 @@ This repository contains a Docker-first voice application that combines a React 
 ```mermaid
 flowchart LR
 	Browser[Browser clients]
-	Gateway[Caddy HTTPS gateway\n:443]
+	FrontendPort[Frontend HTTP port\n:4173]
+	BackendPort[Backend HTTP and Socket.IO\n:4000]
 	Frontend[Frontend\nReact + Vite]
 	Backend[Backend\nExpress + Socket.IO]
 	Janus[Janus Gateway\nStreaming + AudioBridge]
 	RTP[External RTP tools or radios]
 
-	Browser -->|HTTPS| Gateway
-	Gateway -->|Static app| Frontend
-	Browser -->|REST and Socket.IO| Gateway
-	Gateway -->|/api /socket.io /health| Backend
+	Browser -->|HTTP :4173| FrontendPort
+	FrontendPort -->|Static app| Frontend
+	Browser -->|HTTP + Socket.IO :4000| BackendPort
+	BackendPort -->|/api /socket.io /health| Backend
 	Backend -->|Janus WebSocket control| Janus
 	Browser -->|PTT clip upload| Backend
 	Backend -->|FFmpeg to Opus RTP| Janus
@@ -42,15 +43,17 @@ Plain-text fallback:
 ```text
 Browser clients
 	|
-	| HTTPS
+	| HTTP :4173
 	v
-Caddy HTTPS gateway (:443)
+Frontend HTTP port (:4173)
 	|-----------------------------> Frontend (React + Vite)
 	|                               static app
+
+Browser clients
 	|
-	| /api, /socket.io, /health
+	| HTTP and Socket.IO :4000
 	v
-Backend (Express + Socket.IO)
+Backend HTTP port (:4000)
 	|-----------------------------> Janus Gateway (Streaming + AudioBridge)
 	|                               WebSocket control + Opus RTP ingest
 	|
@@ -67,7 +70,7 @@ External RTP tools or radios <-> Janus Gateway
 			 RTP forwarders + RTP participants
 ```
 
-- Caddy is the public entrypoint for browsers and forwards static UI requests to the frontend plus API and Socket.IO traffic to the backend.
+- The frontend is served directly on port `4173`, and the backend API plus Socket.IO are exposed directly on port `4000`.
 - The backend owns room state and Janus control, and it converts push-to-talk uploads into Opus RTP for Janus Streaming.
 - Janus is the media plane: browsers use WebRTC with Janus directly, while external tools use plain RTP through AudioBridge forwarders or participants.
 
@@ -79,6 +82,8 @@ External RTP tools or radios <-> Janus Gateway
 2. The clip is sent to the backend over Socket.IO.
 3. The backend invokes FFmpeg and sends Opus RTP to a Janus Streaming mountpoint.
 4. Janus exposes that stream to listeners over WebRTC.
+
+The walkie-talkie path is tuned for speech: mono Opus, constrained VBR, and in-band FEC for steadier voice quality on weak links.
 
 ### Phone-call mode
 
@@ -96,6 +101,8 @@ External RTP tools or radios <-> Janus Gateway
 - A browser with microphone access
 - Optional: VLC for RTP interoperability checks
 
+For local backend runs outside Docker, the app falls back to a bundled `ffmpeg` binary. Set `FFMPEG_PATH` only if you want to override that with a specific executable.
+
 ### 1. Set LAN access if needed
 
 Review the defaults in `.env.example`. For same-Wi-Fi access, create a root `.env` file and set your host LAN IP:
@@ -110,30 +117,23 @@ LAN_HOST_IP=192.168.0.17
 docker compose up --build
 ```
 
-This starts Janus, the backend, the frontend, and the HTTPS gateway together. The frontend and backend run from built images in this stack, so source changes require a rebuild before browser retesting.
+This starts Janus, the backend, and the frontend together. The frontend and backend run from built images in this stack, so source changes require a rebuild before browser retesting.
 
-### 3. Trust the local HTTPS certificate
+### 3. Open the app
 
-Export the gateway root certificate:
+- `http://localhost:4173` on the host machine
+- `http://LAN_HOST_IP:4173` on other devices on the same Wi-Fi
 
-```powershell
-npm run export:https-root
-```
+Plain HTTP is suitable for localhost development. On non-`localhost` LAN origins, some browsers block microphone access because the page is not a secure context. If that happens, use a browser insecure-origin override for testing or restore a trusted HTTPS setup later.
 
-This writes `infra/caddy/caddy-local-root.crt`. Install that certificate into the Trusted Root store on every client device that should access the app over HTTPS.
-
-### 4. Open the app
-
-- `https://localhost` on the host machine
-- `https://LAN_HOST_IP` on other devices on the same Wi-Fi
-
-### 5. Verify the services
+### 4. Verify the services
 
 On Windows PowerShell, use `curl.exe` for the commands below because `curl` maps to `Invoke-WebRequest`.
 
 ```powershell
-curl.exe -k https://localhost/health
-curl.exe -k https://localhost/api/rooms
+curl.exe http://localhost:4000/health
+curl.exe http://localhost:4000/api/rooms
+curl.exe http://localhost:4173
 curl.exe http://localhost:8088/janus/info
 ```
 
@@ -141,7 +141,8 @@ The health endpoint should report `ok: true` and `janus.connected: true`.
 
 ## Published Ports And Defaults
 
-- HTTPS gateway: `https://localhost` locally and `https://LAN_HOST_IP` on the same Wi-Fi
+- Frontend UI: `http://localhost:4173` locally and `http://LAN_HOST_IP:4173` on the same Wi-Fi
+- Backend API and Socket.IO: `http://localhost:4000` locally and `http://LAN_HOST_IP:4000` on the same Wi-Fi
 - Janus HTTP API: `http://localhost:8088/janus`
 - Janus Admin HTTP API: `http://localhost:7088/admin`
 - Janus WebSocket API: `ws://localhost:8188`
@@ -166,8 +167,9 @@ npm run build
 
 ```powershell
 curl.exe http://localhost:8088/janus/info
-curl.exe -k https://localhost/health
-curl.exe -k https://localhost/api/rooms
+curl.exe http://localhost:4000/health
+curl.exe http://localhost:4000/api/rooms
+curl.exe http://localhost:4173
 ```
 
 ### Manual browser checks
@@ -212,7 +214,7 @@ For browser-native flows, keep Opus with payload type `111`. For external RTP to
 ### 1. Create a room
 
 ```powershell
-curl.exe -k -X POST https://localhost/api/rooms `
+curl.exe -X POST http://localhost:4000/api/rooms `
 	-H "Content-Type: application/json" `
 	-d "{\"roomId\":\"demo\",\"name\":\"Demo Room\"}"
 ```
@@ -222,7 +224,7 @@ curl.exe -k -X POST https://localhost/api/rooms `
 Ask Janus to forward the mixed AudioBridge audio to UDP port `7000` on the host:
 
 ```powershell
-curl.exe -k -X POST https://localhost/api/rooms/demo/forwarders `
+curl.exe -X POST http://localhost:4000/api/rooms/demo/forwarders `
 	-H "Content-Type: application/json" `
 	-d "{\"host\":\"host.docker.internal\",\"port\":7000,\"codec\":\"pcmu\",\"payloadType\":0}"
 ```
@@ -240,7 +242,7 @@ Use a real LAN IP instead of `host.docker.internal` if the RTP receiver is on an
 Create an external RTP participant. The response returns the Janus RTP listener that your generator must send to:
 
 ```powershell
-curl.exe -k -X POST https://localhost/api/rooms/demo/rtp-participants `
+curl.exe -X POST http://localhost:4000/api/rooms/demo/rtp-participants `
 	-H "Content-Type: application/json" `
 	-d "{\"displayName\":\"vlc-tx\",\"codec\":\"pcmu\",\"payloadType\":0}"
 ```

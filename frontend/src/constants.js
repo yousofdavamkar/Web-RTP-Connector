@@ -12,6 +12,7 @@ export const SOCKET_EVENTS = Object.freeze({
     ANSWER: 'answer',
     ICE_CANDIDATE: 'ice-candidate',
     PTT_START: 'ptt-start',
+    PTT_CHUNK: 'ptt-chunk',
     PTT_STOP: 'ptt-stop',
     PTT_BUSY: 'ptt-busy',
     PTT_PLAYBACK_STARTED: 'ptt-playback-started',

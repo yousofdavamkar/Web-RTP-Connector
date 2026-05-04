@@ -12,9 +12,30 @@ const emitRoomState = (io, roomStore, roomId) => {
 };
 
 export const registerSocketHandlers = ({ io, roomStore, janusClient, pttPublisher }) => {
+    const activeLivePtt = new Map();
+
+    const getLiveSessionId = (socketId, roomId) => `${socketId}:${roomId}`;
+
+    const stopLivePttSession = async (socketId, roomId = null) => {
+        const active = activeLivePtt.get(socketId);
+        if (!active) {
+            return;
+        }
+        if (roomId && active.roomId !== roomId) {
+            return;
+        }
+
+        activeLivePtt.delete(socketId);
+        const liveSessionId = getLiveSessionId(socketId, active.roomId);
+        await pttPublisher.stopLiveSession(liveSessionId).catch(() => { });
+    };
+
     const streamingCallbacks = (socket, roomId, socketId) => ({
         onEvent: (message) => {
             if (message.jsep) {
+                console.info(
+                    `[janus-streaming] Relaying offer room=${roomId} socket=${socketId} type=${message.jsep.type} status=${message.plugindata?.data?.status ?? 'n/a'}`,
+                );
                 socket.emit(socketEventNames.offer, {
                     roomId,
                     mode: roomModes.WALKIE_TALKIE,
@@ -117,6 +138,7 @@ export const registerSocketHandlers = ({ io, roomStore, janusClient, pttPublishe
         if (!participant) {
             return;
         }
+        console.trace(`[cleanup] streaming=${participant.streamingHandleId}`);
         await janusClient.detachHandle(participant.streamingHandleId);
         await janusClient.detachHandle(participant.audioBridgeHandleId);
     };
@@ -176,6 +198,7 @@ export const registerSocketHandlers = ({ io, roomStore, janusClient, pttPublishe
         });
 
         socket.on(socketEventNames.leaveRoom, async ({ roomId }) => {
+            await stopLivePttSession(socket.id, roomId);
             const { room, participant } = roomStore.removeParticipant(socket.id);
             socket.leave(roomId);
             await cleanupParticipantHandles(participant);
@@ -226,7 +249,13 @@ export const registerSocketHandlers = ({ io, roomStore, janusClient, pttPublishe
                 if (!participant?.streamingHandleId) {
                     throw new Error('There is no active Janus streaming subscription for this socket.');
                 }
+                console.info(
+                    `[janus-streaming] Received browser answer socket=${socket.id} handle=${participant.streamingHandleId} type=${jsep?.type ?? 'unknown'}; sending start`,
+                );
                 await janusClient.pluginMessage(participant.streamingHandleId, { request: 'start' }, jsep);
+                console.info(
+                    `[janus-streaming] Start sent socket=${socket.id} handle=${participant.streamingHandleId}`,
+                );
             } catch (error) {
                 emitSocketError(socket, error);
             }
@@ -260,8 +289,49 @@ export const registerSocketHandlers = ({ io, roomStore, janusClient, pttPublishe
                     socket.emit(socketEventNames.pttBusy, { roomId, holder: roomStore.getRoom(roomId)?.activePttSpeaker });
                     return;
                 }
+                activeLivePtt.set(socket.id, {
+                    roomId,
+                    liveStarted: false,
+                });
                 io.to(roomId).emit(socketEventNames.pttStart, { roomId, speakerSocketId: socket.id });
                 emitRoomState(io, roomStore, roomId);
+            } catch (error) {
+                emitSocketError(socket, error);
+            }
+        });
+
+        socket.on(socketEventNames.pttChunk, async ({ roomId, mimeType, chunk }) => {
+            try {
+                const room = roomStore.getRoom(roomId);
+                if (!room) {
+                    throw new Error(`Room ${roomId} does not exist.`);
+                }
+                if (room.activePttSpeaker !== socket.id) {
+                    throw new Error('This socket does not currently own the push-to-talk lock.');
+                }
+
+                let active = activeLivePtt.get(socket.id);
+                if (!active || active.roomId !== roomId) {
+                    active = { roomId, liveStarted: false };
+                    activeLivePtt.set(socket.id, active);
+                }
+
+                const liveSessionId = getLiveSessionId(socket.id, roomId);
+                if (!active.liveStarted) {
+                    await pttPublisher.startLiveSession({
+                        sessionId: liveSessionId,
+                        roomId,
+                        port: room.janus.streamingPort,
+                        mimeType,
+                    });
+                    active.liveStarted = true;
+                }
+
+                const normalizedChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk ?? []);
+                pttPublisher.pushLiveChunk({
+                    sessionId: liveSessionId,
+                    chunk: normalizedChunk,
+                });
             } catch (error) {
                 emitSocketError(socket, error);
             }
@@ -276,17 +346,28 @@ export const registerSocketHandlers = ({ io, roomStore, janusClient, pttPublishe
                 if (room.activePttSpeaker !== socket.id) {
                     throw new Error('This socket does not currently own the push-to-talk lock.');
                 }
-                const normalizedBuffer = Buffer.isBuffer(audioBuffer) ? audioBuffer : Buffer.from(audioBuffer ?? []);
-                await pttPublisher.publishClip({
-                    roomId,
-                    port: room.janus.streamingPort,
-                    audioBuffer: normalizedBuffer,
-                    mimeType,
-                    durationMs,
-                });
+
+                const active = activeLivePtt.get(socket.id);
+                const liveSessionId = getLiveSessionId(socket.id, roomId);
+                if (active?.liveStarted || pttPublisher.hasLiveSession(liveSessionId)) {
+                    await pttPublisher.stopLiveSession(liveSessionId);
+                    activeLivePtt.delete(socket.id);
+                } else {
+                    const normalizedBuffer = Buffer.isBuffer(audioBuffer) ? audioBuffer : Buffer.from(audioBuffer ?? []);
+                    if (normalizedBuffer.length > 0) {
+                        await pttPublisher.publishClip({
+                            roomId,
+                            port: room.janus.streamingPort,
+                            audioBuffer: normalizedBuffer,
+                            mimeType,
+                            durationMs,
+                        });
+                    }
+                }
             } catch (error) {
                 emitSocketError(socket, error);
             } finally {
+                activeLivePtt.delete(socket.id);
                 roomStore.releasePtt(roomId, socket.id);
                 emitRoomState(io, roomStore, roomId);
             }
@@ -370,6 +451,7 @@ export const registerSocketHandlers = ({ io, roomStore, janusClient, pttPublishe
         });
 
         socket.on('disconnect', async () => {
+            await stopLivePttSession(socket.id);
             const { room, participant } = roomStore.removeParticipant(socket.id);
             await cleanupParticipantHandles(participant);
             if (room) {

@@ -1,14 +1,146 @@
 import express from 'express';
 import { randomUUID } from 'node:crypto';
 
+import { createExternalWalkieOwnerId } from '../state/roomStore.js';
+
 const createId = (length = 12) => randomUUID().replace(/-/g, '').slice(0, length);
+const WALKIE_INPUT_CODEC_DEFAULT_PAYLOADS = Object.freeze({
+    pcmu: 0,
+    pcma: 8,
+    opus: 111,
+});
+
+const LOCAL_REQUEST_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
+
 const parseOptionalInteger = (value, fallback) => {
     const parsed = Number.parseInt(value, 10);
     return Number.isFinite(parsed) ? parsed : fallback;
 };
 
-export const createRoomsRouter = ({ roomStore, janusClient, config }) => {
+const normalizeWalkieInputCodec = (value, fallback = 'pcmu') => {
+    const normalized = value?.trim().toLowerCase() || fallback;
+    if (!Object.hasOwn(WALKIE_INPUT_CODEC_DEFAULT_PAYLOADS, normalized)) {
+        throw new Error(`Unsupported walkie RTP input codec: ${value}.`);
+    }
+    return normalized;
+};
+
+const resolveWalkieIngestHost = ({ requestedHost, explicitHost, fallbackHost }) => {
+    const normalizedExplicitHost = explicitHost?.trim();
+    if (normalizedExplicitHost) {
+        return normalizedExplicitHost;
+    }
+
+    const normalizedRequestedHost = requestedHost?.split(':')[0]?.trim().toLowerCase();
+    if (normalizedRequestedHost && LOCAL_REQUEST_HOSTS.has(normalizedRequestedHost)) {
+        return '127.0.0.1';
+    }
+
+    return fallbackHost;
+};
+
+const serializeWalkieParticipant = (roomStore, roomId, externalParticipantId) => {
+    const room = roomStore.getRoom(roomId);
+    if (!room) {
+        return null;
+    }
+
+    return roomStore
+        .serializeRoom(room)
+        .externalWalkieParticipants
+        .find((participant) => participant.externalParticipantId === externalParticipantId) ?? null;
+};
+
+export const createRoomsRouter = ({ roomStore, janusClient, config, walkieRtpGateway, notifyRoomState = () => { } }) => {
     const router = express.Router();
+    const autoRadioRearmTimers = new Map();
+
+    const maybeStartAutoRadioSession = async ({ roomId, participant }) => {
+        const room = roomStore.getRoom(roomId);
+        if (!room) {
+            return;
+        }
+
+        const existingSession = walkieRtpGateway.getSession(participant.externalParticipantId);
+        if (existingSession) {
+            return;
+        }
+
+        await walkieRtpGateway.startSession({
+            roomId,
+            participantId: participant.externalParticipantId,
+            inputPort: participant.ingestPort,
+            inputCodec: participant.inputCodec,
+            inputPayloadType: participant.payloadType,
+            outputPort: room.janus.streamingPort,
+        });
+
+        console.info(`[walkie-rtp:auto-start] room=${roomId} participant=${participant.externalParticipantId} src=${participant.ingestHost}:${participant.ingestPort} dst=${config.janus.streamingBindHost}:${room.janus.streamingPort}`);
+        notifyRoomState(roomId);
+    };
+
+    const ensureAutoRadioParticipant = async (roomId) => {
+        if (!config.walkieRtp.autoRadio.enabled) {
+            return;
+        }
+
+        const room = roomStore.getRoom(roomId);
+        if (!room) {
+            return;
+        }
+
+        let participant = roomStore.getExternalWalkieParticipant(roomId, config.walkieRtp.autoRadio.participantId);
+        if (!participant) {
+            const ingestPort = roomStore.allocateExternalWalkiePort();
+            try {
+                participant = roomStore.addExternalWalkieParticipant(roomId, {
+                    externalParticipantId: config.walkieRtp.autoRadio.participantId,
+                    displayName: config.walkieRtp.autoRadio.displayName,
+                    inputCodec: config.walkieRtp.inputCodec,
+                    payloadType: config.walkieRtp.inputPayloadType,
+                    ingestHost: config.walkieRtp.publicHost,
+                    ingestPort,
+                    createdAt: new Date().toISOString(),
+                    autoManaged: true,
+                });
+                console.info(`[walkie-rtp:auto-create] room=${roomId} participant=${participant.externalParticipantId} codec=${participant.inputCodec} pt=${participant.payloadType} listen=${participant.ingestHost}:${participant.ingestPort}`);
+                notifyRoomState(roomId);
+            } catch (error) {
+                roomStore.releaseExternalWalkiePort(ingestPort);
+                throw error;
+            }
+        }
+
+        try {
+            await maybeStartAutoRadioSession({ roomId, participant });
+        } catch (error) {
+            console.warn(`[walkie-rtp:auto-start-failed] room=${roomId} participant=${participant.externalParticipantId} ${error.message}`);
+        }
+
+        if (!autoRadioRearmTimers.has(roomId)) {
+            const rearmIntervalMs = Math.max(1, config.walkieRtp.autoRadio.rearmIntervalSec) * 1000;
+            const timer = setInterval(() => {
+                const current = roomStore.getExternalWalkieParticipant(roomId, config.walkieRtp.autoRadio.participantId);
+                if (!current) {
+                    return;
+                }
+
+                maybeStartAutoRadioSession({ roomId, participant: current }).catch((error) => {
+                    console.warn(`[walkie-rtp:auto-rearm-failed] room=${roomId} participant=${current.externalParticipantId} ${error.message}`);
+                });
+            }, rearmIntervalMs);
+            timer.unref?.();
+            autoRadioRearmTimers.set(roomId, timer);
+        }
+    };
+
+    const clearAutoRadioRearm = (roomId) => {
+        const timer = autoRadioRearmTimers.get(roomId);
+        if (timer) {
+            clearInterval(timer);
+            autoRadioRearmTimers.delete(roomId);
+        }
+    };
 
     router.get('/', (_request, response) => {
         response.json({ rooms: roomStore.listRooms() });
@@ -20,11 +152,13 @@ export const createRoomsRouter = ({ roomStore, janusClient, config }) => {
                 roomId: request.body.roomId,
                 name: request.body.name,
             });
+            await ensureAutoRadioParticipant(room.roomId);
             response.status(201).json({ room: roomStore.serializeRoom(room) });
         } catch (error) {
             if (error.message?.includes('already exists')) {
                 const existingRoom = roomStore.getRoom(request.body.roomId?.trim());
                 if (existingRoom) {
+                    await ensureAutoRadioParticipant(existingRoom.roomId);
                     response.status(200).json({ room: roomStore.serializeRoom(existingRoom) });
                     return;
                 }
@@ -51,14 +185,144 @@ export const createRoomsRouter = ({ roomStore, janusClient, config }) => {
         response.json({ forwarders });
     });
 
+    router.get('/:roomId/walkie-rtp-participants', (request, response) => {
+        const participants = roomStore.listExternalWalkieParticipants(request.params.roomId);
+        if (!participants) {
+            response.status(404).json({ error: 'Room not found.' });
+            return;
+        }
+
+        const room = roomStore.getRoom(request.params.roomId);
+        response.json({ participants: roomStore.serializeRoom(room).externalWalkieParticipants });
+    });
+
     router.delete('/:roomId', async (request, response, next) => {
         try {
+            clearAutoRadioRearm(request.params.roomId);
+            await walkieRtpGateway.stopRoomSessions(request.params.roomId);
             const removed = await roomStore.deleteRoom(request.params.roomId);
             if (!removed) {
                 response.status(404).json({ error: 'Room not found.' });
                 return;
             }
             response.status(204).send();
+        } catch (error) {
+            next(error);
+        }
+    });
+
+    router.post('/:roomId/walkie-rtp-participants', (request, response, next) => {
+        const room = roomStore.getRoom(request.params.roomId);
+        if (!room) {
+            response.status(404).json({ error: 'Room not found.' });
+            return;
+        }
+
+        const inputCodec = normalizeWalkieInputCodec(request.body.inputCodec, config.walkieRtp.inputCodec);
+        const payloadType = parseOptionalInteger(
+            request.body.payloadType ?? request.body.ptype,
+            WALKIE_INPUT_CODEC_DEFAULT_PAYLOADS[inputCodec] ?? config.walkieRtp.inputPayloadType,
+        );
+        const ingestPort = roomStore.allocateExternalWalkiePort();
+        const ingestHost = resolveWalkieIngestHost({
+            requestedHost: request.get('host'),
+            explicitHost: request.body.ingestHost,
+            fallbackHost: config.walkieRtp.publicHost,
+        });
+
+        try {
+            const externalParticipantId = createId(10);
+            const participant = roomStore.addExternalWalkieParticipant(request.params.roomId, {
+                externalParticipantId,
+                displayName: request.body.displayName?.trim() || 'VLC Walkie Endpoint',
+                inputCodec,
+                payloadType,
+                ingestHost,
+                ingestPort,
+                createdAt: new Date().toISOString(),
+            });
+
+            console.info(`[walkie-rtp:create] room=${request.params.roomId} participant=${externalParticipantId} codec=${inputCodec} pt=${payloadType} listen=${participant.ingestHost}:${participant.ingestPort}`);
+            notifyRoomState(request.params.roomId);
+            response.status(201).json({ participant: serializeWalkieParticipant(roomStore, request.params.roomId, externalParticipantId) });
+        } catch (error) {
+            roomStore.releaseExternalWalkiePort(ingestPort);
+            next(error);
+        }
+    });
+
+    router.post('/:roomId/walkie-rtp-participants/:externalParticipantId/ptt/start', async (request, response, next) => {
+        try {
+            const room = roomStore.getRoom(request.params.roomId);
+            if (!room) {
+                response.status(404).json({ error: 'Room not found.' });
+                return;
+            }
+
+            const participant = roomStore.getExternalWalkieParticipant(request.params.roomId, request.params.externalParticipantId);
+            if (!participant) {
+                response.status(404).json({ error: 'Walkie RTP participant not found.' });
+                return;
+            }
+
+            const existingSession = walkieRtpGateway.getSession(request.params.externalParticipantId);
+            if (existingSession) {
+                response.status(200).json({
+                    participant: serializeWalkieParticipant(roomStore, request.params.roomId, request.params.externalParticipantId),
+                    session: existingSession,
+                });
+                return;
+            }
+
+            const ownerId = createExternalWalkieOwnerId(request.params.externalParticipantId);
+            const claimed = roomStore.claimPtt(request.params.roomId, ownerId);
+            if (!claimed) {
+                response.status(409).json({
+                    error: 'The walkie-talkie channel is currently busy.',
+                    holder: room.activePttSpeaker,
+                });
+                return;
+            }
+
+            try {
+                const session = await walkieRtpGateway.startSession({
+                    roomId: request.params.roomId,
+                    participantId: request.params.externalParticipantId,
+                    inputPort: participant.ingestPort,
+                    inputCodec: participant.inputCodec,
+                    inputPayloadType: participant.payloadType,
+                    outputPort: room.janus.streamingPort,
+                });
+
+                console.info(`[walkie-rtp:start] room=${request.params.roomId} participant=${request.params.externalParticipantId} src=${participant.ingestHost}:${participant.ingestPort} dst=${config.janus.streamingBindHost}:${room.janus.streamingPort}`);
+                notifyRoomState(request.params.roomId);
+                response.status(201).json({
+                    participant: serializeWalkieParticipant(roomStore, request.params.roomId, request.params.externalParticipantId),
+                    session,
+                });
+            } catch (error) {
+                roomStore.releasePtt(request.params.roomId, ownerId);
+                throw error;
+            }
+        } catch (error) {
+            next(error);
+        }
+    });
+
+    router.post('/:roomId/walkie-rtp-participants/:externalParticipantId/ptt/stop', async (request, response, next) => {
+        try {
+            const participant = roomStore.getExternalWalkieParticipant(request.params.roomId, request.params.externalParticipantId);
+            if (!participant) {
+                response.status(404).json({ error: 'Walkie RTP participant not found.' });
+                return;
+            }
+
+            await walkieRtpGateway.stopSession(request.params.externalParticipantId);
+            roomStore.releasePtt(request.params.roomId, createExternalWalkieOwnerId(request.params.externalParticipantId));
+
+            console.info(`[walkie-rtp:stop] room=${request.params.roomId} participant=${request.params.externalParticipantId}`);
+            notifyRoomState(request.params.roomId);
+            response.status(200).json({ stopped: true });
         } catch (error) {
             next(error);
         }
@@ -155,6 +419,26 @@ export const createRoomsRouter = ({ roomStore, janusClient, config }) => {
             });
 
             response.status(201).json({ participant: storedParticipant });
+        } catch (error) {
+            next(error);
+        }
+    });
+
+    router.delete('/:roomId/walkie-rtp-participants/:externalParticipantId', async (request, response, next) => {
+        try {
+            const participant = roomStore.getExternalWalkieParticipant(request.params.roomId, request.params.externalParticipantId);
+            if (!participant) {
+                response.status(404).json({ error: 'Walkie RTP participant not found.' });
+                return;
+            }
+
+            await walkieRtpGateway.stopSession(request.params.externalParticipantId);
+            roomStore.releasePtt(request.params.roomId, createExternalWalkieOwnerId(request.params.externalParticipantId));
+            roomStore.removeExternalWalkieParticipant(request.params.roomId, request.params.externalParticipantId);
+
+            console.info(`[walkie-rtp:delete] room=${request.params.roomId} participant=${request.params.externalParticipantId} listen=${participant.ingestHost}:${participant.ingestPort}`);
+            notifyRoomState(request.params.roomId);
+            response.status(204).send();
         } catch (error) {
             next(error);
         }

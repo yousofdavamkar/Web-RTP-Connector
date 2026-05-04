@@ -1,12 +1,36 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { ROOM_MODES, SOCKET_EVENTS } from '../constants.js';
+import { resumePrimedAudio } from '../audioPlayback.js';
 import { usePushToTalk } from '../hooks/usePushToTalk.js';
 import { useWebRTC } from '../hooks/useWebRTC.js';
 import { AudioVisualizer } from './AudioVisualizer.jsx';
 
 export const WalkieTalkieRoom = ({ room, socket, onLeave }) => {
     const audioRef = useRef(null);
+    const audioUnlockedRef = useRef(true);
+    const boostedPlaybackRef = useRef({
+        audioContext: null,
+        gainNode: null,
+        sourceNode: null,
+        stream: null,
+    });
+    const [playbackBlocked, setPlaybackBlocked] = useState(false);
+    const externalWalkieParticipants = room.externalWalkieParticipants ?? [];
+    const trafficParticipants = [
+        ...room.participants.map((participant) => ({
+            key: participant.socketId,
+            displayName: participant.displayName,
+            label: participant.mode,
+            isSpeaking: room.activePttSpeaker === participant.socketId,
+        })),
+        ...externalWalkieParticipants.map((participant) => ({
+            key: `external-${participant.externalParticipantId}`,
+            displayName: participant.displayName,
+            label: `rtp ${participant.inputCodec}`,
+            isSpeaking: participant.isTransmitting,
+        })),
+    ];
     const { connectionState, remoteStream } = useWebRTC({ socket, roomId: room.roomId, mode: ROOM_MODES.WALKIE_TALKIE });
     const { error, isRecording, liveStream, publishState, startTalking, stopTalking } = usePushToTalk({
         socket,
@@ -33,25 +57,152 @@ export const WalkieTalkieRoom = ({ room, socket, onLeave }) => {
         stopTalking();
     };
 
+    const unlockRemotePlayback = async () => {
+        if (!audioRef.current) {
+            return;
+        }
+
+        audioUnlockedRef.current = true;
+        audioRef.current.muted = false;
+        audioRef.current.volume = 1;
+        setPlaybackBlocked(false);
+
+        try {
+            await audioRef.current.play();
+        } catch {
+            // play() rejection after explicit user gesture is unusual; audio will
+            // still play when the next srcObject is attached or the track delivers data.
+        }
+    };
+
+    const stopBoostedPlayback = async () => {
+        const { audioContext, gainNode, sourceNode } = boostedPlaybackRef.current;
+        sourceNode?.disconnect();
+        gainNode?.disconnect();
+        if (audioContext) {
+            await audioContext.close().catch(() => { });
+        }
+        boostedPlaybackRef.current = {
+            audioContext: null,
+            gainNode: null,
+            sourceNode: null,
+            stream: null,
+        };
+    };
+
+    const tryStartBoostedPlayback = async (stream) => {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextClass || !stream) {
+            return false;
+        }
+
+        if (boostedPlaybackRef.current.stream === stream && boostedPlaybackRef.current.audioContext?.state !== 'closed') {
+            return true;
+        }
+
+        await stopBoostedPlayback();
+
+        try {
+            const audioContext = new AudioContextClass();
+            const sourceNode = audioContext.createMediaStreamSource(stream);
+            const gainNode = audioContext.createGain();
+            gainNode.gain.value = 3;
+
+            sourceNode.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+            await audioContext.resume();
+
+            boostedPlaybackRef.current = {
+                audioContext,
+                gainNode,
+                sourceNode,
+                stream,
+            };
+
+            return true;
+        } catch {
+            await stopBoostedPlayback();
+            return false;
+        }
+    };
+
     useEffect(() => {
-        socket.emit(SOCKET_EVENTS.JOIN_ROOM, {
-            roomId: room.roomId,
-            displayName: room.displayName,
-            mode: ROOM_MODES.WALKIE_TALKIE,
-        });
+        const joinRoom = () => {
+            socket.emit(SOCKET_EVENTS.JOIN_ROOM, {
+                roomId: room.roomId,
+                displayName: room.displayName,
+                mode: ROOM_MODES.WALKIE_TALKIE,
+            });
+        };
+
+        joinRoom();
+        socket.on('connect', joinRoom);
 
         return () => {
+            socket.off('connect', joinRoom);
             socket.emit(SOCKET_EVENTS.LEAVE_ROOM, { roomId: room.roomId });
         };
     }, [room.displayName, room.roomId, socket]);
 
     useEffect(() => {
-        if (audioRef.current) {
+        let cancelled = false;
+
+        const applyPlayback = async () => {
+            if (!audioRef.current) {
+                return;
+            }
+
             audioRef.current.srcObject = remoteStream;
-            audioRef.current.muted = isOwnPlayback;
             audioRef.current.volume = 1;
-            audioRef.current.play().catch(() => { });
-        }
+
+            if (!remoteStream || isOwnPlayback) {
+                await stopBoostedPlayback();
+                if (cancelled) {
+                    return;
+                }
+                if (isOwnPlayback) {
+                    // Mute own loopback so the speaker doesn't hear themselves.
+                    audioRef.current.muted = true;
+                    setPlaybackBlocked(false);
+                    audioRef.current.play().catch(() => { });
+                }
+                return;
+            }
+
+            if (audioUnlockedRef.current) {
+                void resumePrimedAudio();
+                const boosted = await tryStartBoostedPlayback(remoteStream);
+                if (cancelled) {
+                    return;
+                }
+
+                if (boosted) {
+                    // Route through an explicit gain node to make low-level RTP audio audible.
+                    audioRef.current.muted = true;
+                    setPlaybackBlocked(false);
+                    return;
+                }
+
+                audioRef.current.muted = false;
+                audioRef.current.play().catch(() => {
+                    audioUnlockedRef.current = false;
+                    setPlaybackBlocked(true);
+                });
+                setPlaybackBlocked(false);
+            } else {
+                // Start muted so autoplay always succeeds, then ask the user to unmute.
+                audioRef.current.muted = true;
+                audioRef.current.play().catch(() => { });
+                setPlaybackBlocked(true);
+            }
+        };
+
+        void applyPlayback();
+
+        return () => {
+            cancelled = true;
+            void stopBoostedPlayback();
+        };
     }, [isOwnPlayback, remoteStream]);
 
     const heldByOtherParticipant = room.activePttSpeaker && room.activePttSpeaker !== socket.id;
@@ -87,6 +238,17 @@ export const WalkieTalkieRoom = ({ room, socket, onLeave }) => {
 
                     <AudioVisualizer active={isRecording} stream={liveStream} />
 
+                    {playbackBlocked ? (
+                        <div className="incoming-call-card">
+                            <p><strong>Browser blocked automatic audio.</strong> Click once to allow playback.</p>
+                            <button className="secondary-button" onClick={unlockRemotePlayback} type="button">
+                                Enable audio
+                            </button>
+                        </div>
+                    ) : null}
+
+                    <AudioVisualizer active={Boolean(remoteStream) && !playbackBlocked} stream={remoteStream} />
+
                     <div className="status-grid">
                         <div>
                             <label>Subscription</label>
@@ -98,21 +260,21 @@ export const WalkieTalkieRoom = ({ room, socket, onLeave }) => {
                         </div>
                         <div>
                             <label>Participants</label>
-                            <strong>{room.participants.length}</strong>
+                            <strong>{trafficParticipants.length}</strong>
                         </div>
                     </div>
                     {error ? <p className="inline-error">{error}</p> : null}
-                    <audio autoPlay playsInline ref={audioRef} />
+                    <audio playsInline ref={audioRef} />
                 </div>
 
                 <div className="panel participants-panel">
                     <h3>Room traffic</h3>
                     <ul className="participant-list">
-                        {room.participants.map((participant) => (
-                            <li key={participant.socketId}>
+                        {trafficParticipants.map((participant) => (
+                            <li key={participant.key}>
                                 <strong>{participant.displayName}</strong>
-                                <span>{participant.mode}</span>
-                                <span>{room.activePttSpeaker === participant.socketId ? 'Speaking now' : 'Listening'}</span>
+                                <span>{participant.label}</span>
+                                <span>{participant.isSpeaking ? 'Speaking now' : 'Listening'}</span>
                             </li>
                         ))}
                     </ul>

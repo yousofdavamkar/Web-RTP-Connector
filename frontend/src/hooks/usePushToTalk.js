@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { SOCKET_EVENTS } from '../constants.js';
+import { requestVoiceAudioStream } from '../media.js';
 
 const preferredMimeTypes = [
     'audio/webm;codecs=opus',
     'audio/ogg;codecs=opus',
     'audio/webm',
 ];
+const LIVE_CHUNK_MS = 120;
 
 const getRecorderMimeType = () => preferredMimeTypes.find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) ?? '';
 const getUserMediaOrThrow = () => {
@@ -24,7 +26,6 @@ export const usePushToTalk = ({ socket, roomId, activeSpeakerSocketId }) => {
     const [liveStream, setLiveStream] = useState(null);
 
     const recorderRef = useRef(null);
-    const chunksRef = useRef([]);
     const startedAtRef = useRef(0);
     const streamRef = useRef(null);
     const pressActiveRef = useRef(false);
@@ -33,7 +34,6 @@ export const usePushToTalk = ({ socket, roomId, activeSpeakerSocketId }) => {
 
     const resetCaptureRefs = () => {
         recorderRef.current = null;
-        chunksRef.current = [];
         startedAtRef.current = 0;
         pressActiveRef.current = false;
         pendingStopRef.current = false;
@@ -83,16 +83,7 @@ export const usePushToTalk = ({ socket, roomId, activeSpeakerSocketId }) => {
 
         try {
             const getUserMedia = getUserMediaOrThrow();
-            const stream = await getUserMedia({
-                audio: {
-                    channelCount: 2,
-                    sampleRate: 48000,
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true,
-                },
-                video: false,
-            });
+            const stream = await requestVoiceAudioStream(getUserMedia);
 
             if (startRequestIdRef.current !== requestId || !pressActiveRef.current || pendingStopRef.current) {
                 for (const track of stream.getTracks()) {
@@ -105,7 +96,6 @@ export const usePushToTalk = ({ socket, roomId, activeSpeakerSocketId }) => {
 
             streamRef.current = stream;
             setLiveStream(stream);
-            chunksRef.current = [];
             startedAtRef.current = performance.now();
 
             const mimeType = getRecorderMimeType();
@@ -113,25 +103,31 @@ export const usePushToTalk = ({ socket, roomId, activeSpeakerSocketId }) => {
             recorderRef.current = recorder;
 
             recorder.addEventListener('dataavailable', (event) => {
-                if (event.data.size > 0) {
-                    chunksRef.current.push(event.data);
+                if (event.data.size === 0) {
+                    return;
                 }
+
+                event.data.arrayBuffer()
+                    .then((buffer) => {
+                        socket.emit(SOCKET_EVENTS.PTT_CHUNK, {
+                            roomId,
+                            mimeType: recorder.mimeType || mimeType || 'audio/webm',
+                            chunk: new Uint8Array(buffer),
+                        });
+                    })
+                    .catch(() => {
+                        setError('Failed to stream microphone audio chunk.');
+                        setPublishState('idle');
+                    });
             });
 
             recorder.addEventListener('stop', async () => {
                 try {
                     setPublishState('publishing');
-                    const blob = new Blob(chunksRef.current, { type: recorder.mimeType || mimeType || 'audio/webm' });
-                    if (blob.size === 0) {
-                        throw new Error('No audio was captured. Check microphone permission and input device, then hold to talk again.');
-                    }
                     const durationMs = Math.max(0, Math.round(performance.now() - startedAtRef.current));
-                    const payload = new Uint8Array(await blob.arrayBuffer());
                     socket.emit(SOCKET_EVENTS.PTT_STOP, {
                         roomId,
-                        mimeType: blob.type,
                         durationMs,
-                        audioBuffer: payload,
                     });
                 } catch (caughtError) {
                     setError(caughtError.message || 'Failed to publish the push-to-talk clip.');
@@ -152,7 +148,7 @@ export const usePushToTalk = ({ socket, roomId, activeSpeakerSocketId }) => {
             });
 
             socket.emit(SOCKET_EVENTS.PTT_START, { roomId });
-            recorder.start();
+            recorder.start(LIVE_CHUNK_MS);
             setIsRecording(true);
 
             if (!pressActiveRef.current || pendingStopRef.current) {

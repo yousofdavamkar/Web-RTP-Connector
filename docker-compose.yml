@@ -23,6 +23,9 @@ services:
     build:
       context: ./backend
     restart: unless-stopped
+    ports:
+      - "4000:4000"
+      - "1351:1351/udp"
     environment:
       SIGNALING_PORT: 4000
       CLIENT_ORIGIN: "*"
@@ -35,49 +38,25 @@ services:
       JANUS_STREAMING_PORT_END: 5098
       JANUS_RTP_FORWARD_HOST: host.docker.internal
       JANUS_RTP_FORWARD_PORT: 7000
+      WALKIE_RTP_PUBLIC_HOST: ${LAN_HOST_IP:-192.168.1.100}
+      WALKIE_RTP_PORT_START: 1351
+      WALKIE_RTP_PORT_END: 1351
+      WALKIE_RTP_INPUT_CODEC: pcma
+      WALKIE_RTP_INPUT_PAYLOAD_TYPE: 8
+      WALKIE_RTP_AUTO_RADIO_ENABLED: ${WALKIE_RTP_AUTO_RADIO_ENABLED:-true}
+      WALKIE_RTP_AUTO_RADIO_ID: ${WALKIE_RTP_AUTO_RADIO_ID:-radio-main}
+      WALKIE_RTP_AUTO_RADIO_DISPLAY_NAME: ${WALKIE_RTP_AUTO_RADIO_DISPLAY_NAME:-Radio Gateway}
+      WALKIE_RTP_AUTO_RADIO_REARM_SEC: ${WALKIE_RTP_AUTO_RADIO_REARM_SEC:-3}
+      WALKIE_RTP_BROWSER_MIRROR_ENABLED: ${WALKIE_RTP_BROWSER_MIRROR_ENABLED:-true}
+      WALKIE_RTP_BROWSER_MIRROR_HOST: ${WALKIE_RTP_BROWSER_MIRROR_HOST:-192.168.1.152}
+      WALKIE_RTP_BROWSER_MIRROR_PORT: ${WALKIE_RTP_BROWSER_MIRROR_PORT:-1350}
+      WALKIE_RTP_BROWSER_MIRROR_CODEC: ${WALKIE_RTP_BROWSER_MIRROR_CODEC:-pcma}
+      WALKIE_RTP_BROWSER_MIRROR_PAYLOAD_TYPE: ${WALKIE_RTP_BROWSER_MIRROR_PAYLOAD_TYPE:-8}
       FFMPEG_PATH: ffmpeg
 
   frontend:
     build:
       context: ./frontend
     restart: unless-stopped
-
-  gateway:
-    image: caddy:2.8-alpine
-    restart: unless-stopped
-    depends_on:
-      - backend
-      - frontend
-    command:
-      - /bin/sh
-      - -lc
-      - |
-        cat >/etc/caddy/Caddyfile <<EOF
-        {
-            default_sni ${LAN_HOST_IP:-127.0.0.1}
-        }
-
-        http://localhost, http://${LAN_HOST_IP:-127.0.0.1} {
-            redir https://{host}{uri}
-        }
-
-        https://localhost, https://${LAN_HOST_IP:-127.0.0.1} {
-            tls internal
-
-            reverse_proxy /api/* backend:4000
-            reverse_proxy /socket.io/* backend:4000
-            reverse_proxy /health backend:4000
-            reverse_proxy frontend:4173
-        }
-        EOF
-        exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
     ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - caddy_data:/data
-      - caddy_config:/config
-
-volumes:
-  caddy_data:
-  caddy_config:
+      - "4173:4173"
