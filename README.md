@@ -4,7 +4,8 @@ This repository contains a Docker-first voice application that combines a React 
 
 ## What It Supports
 
-- Walkie-talkie push-to-talk: browser capture -> backend -> FFmpeg -> Janus Streaming -> WebRTC listeners
+- Walkie-talkie push-to-talk: browser capture -> live Socket.IO chunks -> backend FFmpeg -> Janus Streaming -> WebRTC listeners
+- Optional walkie mirror to radio RTP: browser push-to-talk can be mirrored directly to a configured radio endpoint
 - Phone-call rooms: browser clients join Janus AudioBridge rooms for mixed full-duplex audio
 - External RTP interop: AudioBridge RTP forwarders and plain RTP participants let VLC, RTP generators, or RTP-capable radios send and receive room audio
 
@@ -32,7 +33,7 @@ flowchart LR
 	Browser -->|HTTP + Socket.IO :4000| BackendPort
 	BackendPort -->|/api /socket.io /health| Backend
 	Backend -->|Janus WebSocket control| Janus
-	Browser -->|PTT clip upload| Backend
+	Browser -->|PTT live chunk stream| Backend
 	Backend -->|FFmpeg to Opus RTP| Janus
 	Browser <-->|WebRTC audio| Janus
 	Janus <-->|RTP forwarders and RTP participants| RTP
@@ -58,7 +59,7 @@ Backend HTTP port (:4000)
 	|                               WebSocket control + Opus RTP ingest
 	|
 	+<---------------------------- Browser clients
-	|                              PTT clip upload
+	|                              PTT live chunk stream
 	|
 	+-----------------------------> Browser clients
 	|                              room state + signaling
@@ -71,19 +72,27 @@ External RTP tools or radios <-> Janus Gateway
 ```
 
 - The frontend is served directly on port `4173`, and the backend API plus Socket.IO are exposed directly on port `4000`.
-- The backend owns room state and Janus control, and it converts push-to-talk uploads into Opus RTP for Janus Streaming.
+- The backend owns room state and Janus control, and it converts live push-to-talk chunks into Opus RTP for Janus Streaming.
 - Janus is the media plane: browsers use WebRTC with Janus directly, while external tools use plain RTP through AudioBridge forwarders or participants.
 
 ## Media Paths
 
 ### Walkie-talkie mode
 
-1. The browser captures a push-to-talk clip.
-2. The clip is sent to the backend over Socket.IO.
-3. The backend invokes FFmpeg and sends Opus RTP to a Janus Streaming mountpoint.
+1. The browser captures microphone audio and emits small live chunks over Socket.IO while PTT is held.
+2. The backend feeds those chunks to FFmpeg and sends Opus RTP to a Janus Streaming mountpoint.
+3. If walkie mirror is enabled, the same live PTT stream is also transcoded and sent to the configured radio RTP target.
 4. Janus exposes that stream to listeners over WebRTC.
 
 The walkie-talkie path is tuned for speech: mono Opus, constrained VBR, and in-band FEC for steadier voice quality on weak links.
+
+### Default radio profile in this repository
+
+- Host LAN IP used by defaults: `192.168.1.100`
+- Radio -> app ingest target: `192.168.1.100:1351/udp`
+- Browser PTT mirror target: `192.168.1.152:1350/udp`
+- Radio codec profile: `pcma` with payload type `8`
+- Auto-managed external walkie participant ID: `radio-main`
 
 ### Phone-call mode
 
@@ -108,7 +117,7 @@ For local backend runs outside Docker, the app falls back to a bundled `ffmpeg` 
 Review the defaults in `.env.example`. For same-Wi-Fi access, create a root `.env` file and set your host LAN IP:
 
 ```bash
-LAN_HOST_IP=192.168.0.17
+LAN_HOST_IP=192.168.1.100
 ```
 
 ### 2. Build and start everything
@@ -149,10 +158,11 @@ The health endpoint should report `ok: true` and `janus.connected: true`.
 - Janus Admin WebSocket API: `ws://localhost:7188`
 - Static Streaming verification mountpoint: ID `9001` on `6004/udp`
 - Static AudioBridge verification room: `7001`
-- Dynamic walkie-talkie RTP ingest: `5004-5098/udp` inside Docker
+- External walkie RTP ingest (published on host): `1351/udp`
+- Internal Janus streaming ingest used by backend: `5004-5098/udp` inside Docker
 - Janus WebRTC media: `10000-10200/udp`
 
-The dynamic walkie-talkie RTP ingest range stays inside the Docker network. The backend publishes PTT audio to Janus over the container network, so you do not need to bind that range on the Windows host.
+The internal Janus walkie ingest range `5004-5098/udp` stays inside the Docker network. The external radio ingress port is published separately as `1351/udp` so RTP radios or gateways can send directly to the backend walkie bridge.
 
 ## Testing
 
@@ -194,7 +204,7 @@ Phone-call:
 Forwarder receive test:
 
 1. Create a room, for example `demo`.
-2. Create an RTP forwarder with `pcmu` and payload type `0`.
+2. Create an RTP forwarder with `pcma` and payload type `8`.
 3. Start VLC on the destination UDP port.
 4. Join the room in phone-call mode from a browser.
 5. Confirm VLC receives the mixed room audio.
@@ -203,13 +213,13 @@ Participant send test:
 
 1. Create a plain RTP participant.
 2. Note the returned `janusRtp.port`.
-3. Send PCMU or PCMA RTP into that port from VLC or another generator.
+3. Send PCMA RTP (payload type `8`) into that port from VLC or another generator.
 4. Join the same room from a browser.
 5. Confirm the browser hears the external RTP source.
 
 ## Using VLC Or Another RTP Generator
 
-For browser-native flows, keep Opus with payload type `111`. For external RTP tools, prefer AudioBridge interop with `pcmu` and payload type `0`, or `pcma` and payload type `8`.
+For browser-native flows, keep Opus with payload type `111`. For external RTP tools, this repository defaults to `pcma` with payload type `8`.
 
 ### 1. Create a room
 
@@ -226,7 +236,7 @@ Ask Janus to forward the mixed AudioBridge audio to UDP port `7000` on the host:
 ```powershell
 curl.exe -X POST http://localhost:4000/api/rooms/demo/forwarders `
 	-H "Content-Type: application/json" `
-	-d "{\"host\":\"host.docker.internal\",\"port\":7000,\"codec\":\"pcmu\",\"payloadType\":0}"
+	-d "{\"host\":\"host.docker.internal\",\"port\":7000,\"codec\":\"pcma\",\"payloadType\":8}"
 ```
 
 Then listen in VLC:
@@ -244,7 +254,7 @@ Create an external RTP participant. The response returns the Janus RTP listener 
 ```powershell
 curl.exe -X POST http://localhost:4000/api/rooms/demo/rtp-participants `
 	-H "Content-Type: application/json" `
-	-d "{\"displayName\":\"vlc-tx\",\"codec\":\"pcmu\",\"payloadType\":0}"
+	-d "{\"displayName\":\"vlc-tx\",\"codec\":\"pcma\",\"payloadType\":8}"
 ```
 
 If you also want Janus to send mixed room audio back to the external endpoint, include `remoteHost` and `remotePort` in the request.
@@ -271,15 +281,15 @@ If the API reports a Docker container IP for `janusRtp.host`, use the Docker hos
 
 ## Using A Real RTP Radio Or RTP Gateway
 
-Use phone-call rooms and AudioBridge for hardware or gateway interoperability. The walkie-talkie Streaming path is tuned for browser uploads via FFmpeg and is not the recommended entry point for external RTP equipment.
+This repository is currently configured for a walkie-talkie radio profile with automatic room attachment:
 
-A practical setup looks like this:
+1. Create or join a room in walkie-talkie mode.
+2. The backend auto-creates the external walkie radio participant (`radio-main`) and auto-rearms the session.
+3. Configure the radio or gateway to transmit RTP to `192.168.1.100:1351` with `pcma` payload type `8`.
+4. Browser users in walkie mode hear radio traffic through Janus Streaming.
+5. Browser PTT is mirrored to `192.168.1.152:1350` using `pcma` payload type `8`.
 
-1. Create or reuse a phone-call room.
-2. Create a plain RTP participant so the radio or radio gateway can send audio into the room.
-3. Configure the radio or gateway to transmit plain RTP to the host or LAN IP and the returned `janusRtp.port`.
-4. Use `pcmu` with payload type `0` or `pcma` with payload type `8` unless the device requires something else.
-5. If the radio also needs receive audio from the room, either include `remoteHost` and `remotePort` when creating the RTP participant, or create an AudioBridge RTP forwarder that sends the mixed room audio to the radio or gateway.
+For AudioBridge-specific interoperability flows (forwarders and plain RTP participants), keep using the `/forwarders` and `/rtp-participants` APIs.
 
 Important constraints:
 
