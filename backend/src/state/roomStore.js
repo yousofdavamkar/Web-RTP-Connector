@@ -2,16 +2,54 @@ import { randomUUID } from 'node:crypto';
 
 const DEFAULT_AUDIO_ROOM_START = 3100;
 const DEFAULT_STREAM_MOUNTPOINT_START = 4100;
+const DEFAULT_EXTERNAL_WALKIE_PORT_START = 7004;
+const DEFAULT_EXTERNAL_WALKIE_PORT_END = 7098;
+const EXTERNAL_WALKIE_OWNER_PREFIX = 'external-walkie:';
 const createId = (length = 12) => randomUUID().replace(/-/g, '').slice(0, length);
 
+export const createExternalWalkieOwnerId = (externalParticipantId) => `${EXTERNAL_WALKIE_OWNER_PREFIX}${externalParticipantId}`;
+
+const serializeActivePttSource = (room) => {
+    if (!room.activePttSpeaker) {
+        return null;
+    }
+
+    if (room.activePttSpeaker.startsWith(EXTERNAL_WALKIE_OWNER_PREFIX)) {
+        const externalParticipantId = room.activePttSpeaker.slice(EXTERNAL_WALKIE_OWNER_PREFIX.length);
+        const participant = room.externalWalkieParticipants.get(externalParticipantId);
+
+        return {
+            type: 'external-walkie',
+            externalParticipantId,
+            displayName: participant?.displayName ?? 'External RTP Participant',
+        };
+    }
+
+    const participant = room.participants.get(room.activePttSpeaker);
+    return {
+        type: 'browser',
+        socketId: room.activePttSpeaker,
+        displayName: participant?.displayName ?? 'Unknown participant',
+    };
+};
+
 export class RoomStore {
-    constructor({ janusClient, portRangeStart = 5004, portRangeEnd = 5098 }) {
+    constructor({
+        janusClient,
+        portRangeStart = 5004,
+        portRangeEnd = 5098,
+        externalWalkiePortStart = DEFAULT_EXTERNAL_WALKIE_PORT_START,
+        externalWalkiePortEnd = DEFAULT_EXTERNAL_WALKIE_PORT_END,
+    }) {
         this.janusClient = janusClient;
         this.rooms = new Map();
         this.userRoomIndex = new Map();
         this.allocatedPorts = new Set();
+        this.allocatedExternalWalkiePorts = new Set();
         this.portRangeStart = portRangeStart;
         this.portRangeEnd = portRangeEnd;
+        this.externalWalkiePortStart = externalWalkiePortStart;
+        this.externalWalkiePortEnd = externalWalkiePortEnd;
         this.nextAudioBridgeRoomId = DEFAULT_AUDIO_ROOM_START;
         this.nextStreamingMountpointId = DEFAULT_STREAM_MOUNTPOINT_START;
     }
@@ -51,6 +89,16 @@ export class RoomStore {
                 janusRtp: participant.janusRtp,
                 createdAt: participant.createdAt,
             })),
+            externalWalkieParticipants: Array.from(room.externalWalkieParticipants.values()).map((participant) => ({
+                externalParticipantId: participant.externalParticipantId,
+                displayName: participant.displayName,
+                inputCodec: participant.inputCodec,
+                payloadType: participant.payloadType,
+                ingestHost: participant.ingestHost,
+                ingestPort: participant.ingestPort,
+                createdAt: participant.createdAt,
+                isTransmitting: room.activePttSpeaker === createExternalWalkieOwnerId(participant.externalParticipantId),
+            })),
             forwarders: Array.from(room.forwarders.values()).map((forwarder) => ({
                 streamId: forwarder.streamId,
                 host: forwarder.host,
@@ -61,6 +109,7 @@ export class RoomStore {
                 createdAt: forwarder.createdAt,
             })),
             activePttSpeaker: room.activePttSpeaker,
+            activePttSource: serializeActivePttSource(room),
             call: { ...room.call },
         };
     }
@@ -98,6 +147,7 @@ export class RoomStore {
             createdAt: new Date().toISOString(),
             participants: new Map(),
             externalRtpParticipants: new Map(),
+            externalWalkieParticipants: new Map(),
             forwarders: new Map(),
             janus: {
                 streamingMountpointId,
@@ -128,6 +178,9 @@ export class RoomStore {
 
         for (const participant of room.participants.values()) {
             this.userRoomIndex.delete(participant.socketId);
+        }
+        for (const participant of room.externalWalkieParticipants.values()) {
+            this.releaseExternalWalkiePort(participant.ingestPort);
         }
         this.releasePort(room.janus.streamingPort);
         this.rooms.delete(roomId);
@@ -314,6 +367,52 @@ export class RoomStore {
         return participant;
     }
 
+    addExternalWalkieParticipant(roomId, participant) {
+        const room = this.rooms.get(roomId);
+        if (!room) {
+            throw new Error(`Room ${roomId} does not exist.`);
+        }
+        room.externalWalkieParticipants.set(participant.externalParticipantId, participant);
+        return participant;
+    }
+
+    getExternalWalkieParticipant(roomId, externalParticipantId) {
+        const room = this.rooms.get(roomId);
+        if (!room) {
+            return null;
+        }
+        return room.externalWalkieParticipants.get(externalParticipantId) ?? null;
+    }
+
+    listExternalWalkieParticipants(roomId) {
+        const room = this.rooms.get(roomId);
+        if (!room) {
+            return null;
+        }
+        return Array.from(room.externalWalkieParticipants.values());
+    }
+
+    removeExternalWalkieParticipant(roomId, externalParticipantId) {
+        const room = this.rooms.get(roomId);
+        if (!room) {
+            return null;
+        }
+
+        const participant = room.externalWalkieParticipants.get(externalParticipantId) ?? null;
+        if (!participant) {
+            return null;
+        }
+
+        room.externalWalkieParticipants.delete(externalParticipantId);
+        this.releaseExternalWalkiePort(participant.ingestPort);
+
+        if (room.activePttSpeaker === createExternalWalkieOwnerId(externalParticipantId)) {
+            room.activePttSpeaker = null;
+        }
+
+        return participant;
+    }
+
     addForwarder(roomId, forwarder) {
         const room = this.rooms.get(roomId);
         if (!room) {
@@ -345,7 +444,7 @@ export class RoomStore {
 
     allocatePort() {
         for (let port = this.portRangeStart; port <= this.portRangeEnd; port += 2) {
-            if (!this.allocatedPorts.has(port)) {
+            if (!this.isPortAllocated(port)) {
                 this.allocatedPorts.add(port);
                 return port;
             }
@@ -355,5 +454,24 @@ export class RoomStore {
 
     releasePort(port) {
         this.allocatedPorts.delete(port);
+    }
+
+    allocateExternalWalkiePort() {
+        for (let port = this.externalWalkiePortStart; port <= this.externalWalkiePortEnd; port += 2) {
+            if (!this.isPortAllocated(port)) {
+                this.allocatedExternalWalkiePorts.add(port);
+                return port;
+            }
+        }
+
+        throw new Error('No RTP ports are available for external walkie participants.');
+    }
+
+    releaseExternalWalkiePort(port) {
+        this.allocatedExternalWalkiePorts.delete(port);
+    }
+
+    isPortAllocated(port) {
+        return this.allocatedPorts.has(port) || this.allocatedExternalWalkiePorts.has(port);
     }
 }

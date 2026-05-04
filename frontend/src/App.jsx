@@ -31,7 +31,9 @@ const buildSession = ({ displayName, mode, roomId, roomName }) => ({
     roomId,
     name: roomName || roomId,
     participants: [],
+    externalWalkieParticipants: [],
     activePttSpeaker: null,
+    activePttSource: null,
     janus: {},
     call: { status: 'idle' },
 });

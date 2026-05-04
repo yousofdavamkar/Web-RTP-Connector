@@ -72,6 +72,13 @@ const bindRemoteTrack = (peerConnection, setConnectionState, setRemoteStream) =>
     });
 };
 
+const setDebugWalkiePeer = (peerConnection) => {
+    if (typeof window === 'undefined') {
+        return;
+    }
+    window.__walkiePc = peerConnection ?? null;
+};
+
 export const useWebRTC = ({ socket, roomId, mode }) => {
     const [remoteStream, setRemoteStream] = useState(null);
     const [localStream, setLocalStream] = useState(null);
@@ -79,9 +86,25 @@ export const useWebRTC = ({ socket, roomId, mode }) => {
 
     const walkieConnectionRef = useRef(null);
     const pendingWalkieCandidatesRef = useRef([]);
+    const walkieNegotiationInProgressRef = useRef(false);
+    const queuedWalkieOfferRef = useRef(null);
     const phoneConnectionRef = useRef(null);
     const pendingPhoneCandidatesRef = useRef([]);
     const localStreamRef = useRef(null);
+
+    const flushPendingWalkieCandidates = async (peerConnection) => {
+        if (!peerConnection || !peerConnection.remoteDescription) {
+            return;
+        }
+
+        const candidates = pendingWalkieCandidatesRef.current;
+        pendingWalkieCandidatesRef.current = [];
+        for (const candidate of candidates) {
+            await peerConnection.addIceCandidate(candidate?.completed ? null : candidate).catch(() => {
+                // Ignore candidate timing races during renegotiation.
+            });
+        }
+    };
 
     const destroyPeer = (stopLocalTracks = false) => {
         if (walkieConnectionRef.current) {
@@ -89,6 +112,7 @@ export const useWebRTC = ({ socket, roomId, mode }) => {
             walkieConnectionRef.current.onicecandidate = null;
             walkieConnectionRef.current.close();
             walkieConnectionRef.current = null;
+            setDebugWalkiePeer(null);
         }
         pendingWalkieCandidatesRef.current = [];
         if (phoneConnectionRef.current) {
@@ -198,46 +222,127 @@ export const useWebRTC = ({ socket, roomId, mode }) => {
                 return;
             }
 
-            if (walkieConnectionRef.current) {
-                walkieConnectionRef.current.close();
-                walkieConnectionRef.current = null;
+            queuedWalkieOfferRef.current = payload;
+            if (walkieNegotiationInProgressRef.current) {
+                console.debug('[walkie-webrtc] Offer queued while renegotiation is in progress.', {
+                    roomId,
+                    signalingState: walkieConnectionRef.current?.signalingState,
+                    connectionState: walkieConnectionRef.current?.connectionState,
+                });
+                return;
             }
-            pendingWalkieCandidatesRef.current = [];
 
-            const peerConnection = new RTCPeerConnection(rtcConfig);
-            walkieConnectionRef.current = peerConnection;
-            setConnectionState('connecting');
-            bindPeerConnectionState(peerConnection, setConnectionState, setRemoteStream);
-            bindRemoteTrack(peerConnection, setConnectionState, setRemoteStream);
-
-            peerConnection.addEventListener('icecandidate', (event) => {
-                socket.emit(SOCKET_EVENTS.ICE_CANDIDATE, {
-                    roomId,
-                    mode: ROOM_MODES.WALKIE_TALKIE,
-                    candidate: event.candidate ? event.candidate.toJSON() : { completed: true },
-                });
-            });
-
+            walkieNegotiationInProgressRef.current = true;
             try {
-                await peerConnection.setRemoteDescription(payload.jsep);
-                const answer = await peerConnection.createAnswer();
-                await peerConnection.setLocalDescription(answer);
+                while (queuedWalkieOfferRef.current) {
+                    const activePayload = queuedWalkieOfferRef.current;
+                    queuedWalkieOfferRef.current = null;
 
-                for (const candidate of pendingWalkieCandidatesRef.current) {
-                    await peerConnection.addIceCandidate(candidate?.completed ? null : candidate);
+                    console.debug('[walkie-webrtc] Offer received.', {
+                        roomId,
+                        signalingState: walkieConnectionRef.current?.signalingState,
+                        connectionState: walkieConnectionRef.current?.connectionState,
+                    });
+
+                    // If an active peer connection exists, renegotiate on it rather than tearing it down.
+                    // Janus sends a new offer when a new RTP stream starts on the mountpoint - destroying
+                    // the existing connection at that moment causes the exact audio gap we're trying to fix.
+                    const existing = walkieConnectionRef.current;
+                    const canRenegotiate = existing
+                        && existing.connectionState !== 'closed'
+                        && existing.connectionState !== 'failed'
+                        && existing.signalingState === 'stable';
+
+                    if (canRenegotiate) {
+                        try {
+                            console.debug('[walkie-webrtc] Renegotiation started.', { roomId });
+                            await existing.setRemoteDescription(activePayload.jsep);
+                            await flushPendingWalkieCandidates(existing);
+                            const answer = await existing.createAnswer();
+                            await existing.setLocalDescription(answer);
+                            socket.emit(SOCKET_EVENTS.ANSWER, {
+                                roomId,
+                                mode: ROOM_MODES.WALKIE_TALKIE,
+                                jsep: {
+                                    type: existing.localDescription.type,
+                                    sdp: existing.localDescription.sdp,
+                                },
+                            });
+                            console.debug('[walkie-webrtc] Renegotiation completed.', { roomId });
+                            continue;
+                        } catch (error) {
+                            // Renegotiation failed - fall through to create a fresh connection below.
+                            console.warn('[walkie-webrtc] Renegotiation failed, recreating peer.', {
+                                roomId,
+                                message: error?.message,
+                            });
+                            existing.close();
+                            walkieConnectionRef.current = null;
+                            setDebugWalkiePeer(null);
+                            pendingWalkieCandidatesRef.current = [];
+                        }
+                    } else if (existing && existing.connectionState !== 'closed' && existing.connectionState !== 'failed') {
+                        console.debug('[walkie-webrtc] Offer arrived while signaling not stable; waiting for next offer.', {
+                            roomId,
+                            signalingState: existing.signalingState,
+                            connectionState: existing.connectionState,
+                        });
+                        continue;
+                    } else {
+                        if (existing) {
+                            existing.close();
+                            walkieConnectionRef.current = null;
+                            setDebugWalkiePeer(null);
+                        }
+                        pendingWalkieCandidatesRef.current = [];
+                    }
+
+                    console.debug('[walkie-webrtc] Creating fresh walkie peer connection.', { roomId });
+                    const peerConnection = new RTCPeerConnection(rtcConfig);
+                    walkieConnectionRef.current = peerConnection;
+                    setDebugWalkiePeer(peerConnection);
+                    setConnectionState('connecting');
+                    bindPeerConnectionState(peerConnection, setConnectionState, setRemoteStream);
+                    bindRemoteTrack(peerConnection, setConnectionState, setRemoteStream);
+
+                    peerConnection.addEventListener('icecandidate', (event) => {
+                        socket.emit(SOCKET_EVENTS.ICE_CANDIDATE, {
+                            roomId,
+                            mode: ROOM_MODES.WALKIE_TALKIE,
+                            candidate: event.candidate ? event.candidate.toJSON() : { completed: true },
+                        });
+                    });
+
+                    try {
+                        await peerConnection.setRemoteDescription(activePayload.jsep);
+                        await flushPendingWalkieCandidates(peerConnection);
+                        const answer = await peerConnection.createAnswer();
+                        await peerConnection.setLocalDescription(answer);
+
+                        socket.emit(SOCKET_EVENTS.ANSWER, {
+                            roomId,
+                            mode: ROOM_MODES.WALKIE_TALKIE,
+                            jsep: {
+                                type: peerConnection.localDescription.type,
+                                sdp: peerConnection.localDescription.sdp,
+                            },
+                        });
+                    } catch (error) {
+                        if (walkieConnectionRef.current === peerConnection) {
+                            walkieConnectionRef.current = null;
+                            setDebugWalkiePeer(null);
+                        }
+                        peerConnection.close();
+                        pendingWalkieCandidatesRef.current = [];
+                        console.error('[walkie-webrtc] Failed to establish walkie peer from offer.', {
+                            roomId,
+                            message: error?.message,
+                        });
+                        setConnectionState('error');
+                    }
                 }
-                pendingWalkieCandidatesRef.current = [];
-
-                socket.emit(SOCKET_EVENTS.ANSWER, {
-                    roomId,
-                    mode: ROOM_MODES.WALKIE_TALKIE,
-                    jsep: {
-                        type: peerConnection.localDescription.type,
-                        sdp: peerConnection.localDescription.sdp,
-                    },
-                });
-            } catch {
-                setConnectionState('error');
+            } finally {
+                walkieNegotiationInProgressRef.current = false;
             }
         };
 

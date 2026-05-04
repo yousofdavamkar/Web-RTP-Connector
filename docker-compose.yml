@@ -25,6 +25,7 @@ services:
     restart: unless-stopped
     ports:
       - "4000:4000"
+      - "7004-7098:7004-7098/udp"
     environment:
       SIGNALING_PORT: 4000
       CLIENT_ORIGIN: "*"
@@ -37,6 +38,11 @@ services:
       JANUS_STREAMING_PORT_END: 5098
       JANUS_RTP_FORWARD_HOST: host.docker.internal
       JANUS_RTP_FORWARD_PORT: 7000
+      WALKIE_RTP_PUBLIC_HOST: ${LAN_HOST_IP:-127.0.0.1}
+      WALKIE_RTP_PORT_START: 7004
+      WALKIE_RTP_PORT_END: 7098
+      WALKIE_RTP_INPUT_CODEC: pcmu
+      WALKIE_RTP_INPUT_PAYLOAD_TYPE: 0
       FFMPEG_PATH: ffmpeg
 
   frontend:
